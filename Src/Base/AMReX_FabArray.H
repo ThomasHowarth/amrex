@@ -55,7 +55,8 @@
 
 namespace amrex {
 
-template <BaseFabType T>
+template <typename T>
+requires (!BaseFabType<T>)
 Long nBytesOwned (T const&) noexcept { return 0; }
 
 template <typename T>
