@@ -24,11 +24,12 @@ foreach(D IN LISTS AMReX_SPACEDIM)
                                    lo_bc=periodic neumann inhomog_neumann
                                    hi_bc=periodic inhomog_neumann dirichlet)
 
-    # Robin walls (one component only) with homogeneous Dirichlet EB
+    # Robin walls (one component only) with homogeneous Dirichlet EB and a
+    # scalar EB beta
     setup_test(${D} _sources _input_files
        BASE_NAME LinearSolvers_EBFluxConsistency_robin
        RUNTIME_SUBDIR robin
-       CMDLINE_PARAMS_AFTER_INPUTS eb_bc=homog_dirichlet
+       CMDLINE_PARAMS_AFTER_INPUTS eb_bc=homog_dirichlet eb_beta_scalar=1
                                    lo_bc=robin robin robin hi_bc=robin robin robin)
 
     unset(_sources)
