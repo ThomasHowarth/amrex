@@ -2,7 +2,9 @@
 #
 # Known failures on development (not run by ctest):
 #  - max_level=1: cut coarse cells next to the fine level, because reflux
-#    ignores the EB area and volume fractions.
+#    ignores the EB area and volume fractions (with fpe_trap_invalid=1, some
+#    compilers first trap on a 0/0 in the EB average down of the
+#    coefficients).
 #  - inhomog_neumann or robin on a wall that the EB crosses, e.g.
 #    lo_bc = inhomog_neumann ... with eb2.sphere_center = 0.1 0.5 0.5 (#6169).
 amrex.fpe_trap_invalid = 1

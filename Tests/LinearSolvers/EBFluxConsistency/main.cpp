@@ -74,7 +74,7 @@ void fill (MultiFab& mf, Geometry const& geom, Real lo, Real hi, bool smooth, in
             if (smooth) {
                 Real s = Real(1.0);
                 for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-                    Real x = problo[d] + (iv[d] + (typ.cellCentered(d) ? 0.5 : 0.0))*dx[d];
+                    Real x = problo[d] + (iv[d] + (typ.cellCentered(d) ? 0.5_rt : 0.0_rt))*dx[d];
                     s *= std::cos(Real(2.0+n+d)*x);
                 }
                 v += s;
@@ -108,17 +108,20 @@ int main (int argc, char* argv[])
         pp.query("max_grid_size", max_grid_size);
         int max_level = 0;
         pp.query("max_level", max_level);
+        // Every finer level covers the same region, so only two levels nest
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(max_level >= 0 && max_level <= 1,
+                                         "max_level must be 0 or 1");
         int ncomp = 1;
         pp.query("ncomp", ncomp);
         Vector<Real> prob_lo(AMREX_SPACEDIM, 0.0), prob_hi(AMREX_SPACEDIM, 1.0);
-        pp.queryarr("prob_lo", prob_lo);
-        pp.queryarr("prob_hi", prob_hi);
+        pp.queryarr("prob_lo", prob_lo, 0, AMREX_SPACEDIM);
+        pp.queryarr("prob_hi", prob_hi, 0, AMREX_SPACEDIM);
         Vector<Real> fine_lo(AMREX_SPACEDIM, 0.25), fine_hi(AMREX_SPACEDIM, 0.75);
-        pp.queryarr("fine_lo", fine_lo); // fraction of the domain
-        pp.queryarr("fine_hi", fine_hi);
+        pp.queryarr("fine_lo", fine_lo, 0, AMREX_SPACEDIM); // fraction of the domain
+        pp.queryarr("fine_hi", fine_hi, 0, AMREX_SPACEDIM);
         Vector<std::string> lo_bc_s(AMREX_SPACEDIM, "dirichlet"), hi_bc_s(AMREX_SPACEDIM, "dirichlet");
-        pp.queryarr("lo_bc", lo_bc_s);
-        pp.queryarr("hi_bc", hi_bc_s);
+        pp.queryarr("lo_bc", lo_bc_s, 0, AMREX_SPACEDIM);
+        pp.queryarr("hi_bc", hi_bc_s, 0, AMREX_SPACEDIM);
         std::string eb_bc = "neumann"; // neumann, dirichlet, homog_dirichlet
         pp.query("eb_bc", eb_bc);
         bool eb_beta_scalar = false;
@@ -300,7 +303,7 @@ int main (int argc, char* argv[])
             Box const& dom = geom[lev].Domain();
 
             // Mask: 1 where a finer level covers the cell, 2 where the cell
-            // touches the finer level's region, 0 elsewhere
+            // shares a face with the finer level's region, 0 elsewhere
             iMultiFab fine_mask(grids[lev], dmap[lev], 1, 0);
             fine_mask.setVal(0);
             if (lev < max_level) {
@@ -309,8 +312,10 @@ int main (int argc, char* argv[])
                     auto const& m = fine_mask.array(mfi);
                     Box const& vbx = mfi.validbox();
                     for (auto const& isect : cba.intersections(amrex::grow(vbx,1))) {
-                        Box const b = amrex::grow(isect.second,1) & vbx;
-                        amrex::LoopOnCpu(b, [&] (int i, int j, int k) { m(i,j,k) = 2; });
+                        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                            Box const b = amrex::grow(isect.second,d,1) & vbx;
+                            amrex::LoopOnCpu(b, [&] (int i, int j, int k) { m(i,j,k) = 2; });
+                        }
                     }
                     for (auto const& isect : cba.intersections(vbx)) {
                         amrex::LoopOnCpu(isect.second, [&] (int i, int j, int k) { m(i,j,k) = 1; });

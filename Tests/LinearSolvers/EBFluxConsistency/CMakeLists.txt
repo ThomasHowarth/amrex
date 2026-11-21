@@ -1,4 +1,6 @@
-if (NOT AMReX_EB)
+# The checks run on the host, and need double precision.
+if (NOT AMReX_EB OR NOT AMReX_GPU_BACKEND STREQUAL NONE
+    OR AMReX_PRECISION STREQUAL "SINGLE")
    return()
 endif ()
 
