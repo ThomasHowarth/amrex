@@ -225,6 +225,15 @@ public:
                         const FArrayBox& sol, Location loc,
                         int face_only=0) const final;
 
+    // The cut-cell operator weights its fluxes by the face area fractions
+    // and divides by the volume fraction, so refluxing weights them the same
+    // way (public for cuda).
+    void prepareReflux (int crse_amrlev, YAFluxRegister& fluxreg,
+                        const MultiFab& crse_sol, MultiFab& fine_sol) const override;
+    void adjustRefluxFluxes (int amrlev, const MFIter& mfi, const Box& tbx, bool face_only,
+                             const Array<FArrayBox*,AMREX_SPACEDIM>& flux,
+                             const FArrayBox& sol) const override;
+
     //! Divide \p mf by the diagonal of the operator (used by CG-family bottom solvers).
     void normalize (int amrlev, int mglev, MultiFab& mf) const final;
 
@@ -344,6 +353,17 @@ protected:
     [[nodiscard]] bool supportRobinBC () const noexcept override { return getNComp() == 1; }
 
     mutable Vector<Vector<TagVector<MLMGABCEBTag<RT>>>> m_eb_bc_tags;
+
+    // Coarse cell volumes times the volume fractions for refluxing, per AMR
+    // level
+    mutable Vector<MultiFab> m_reflux_cvol;
+
+    // Whether refluxing is weighted with the EB fractions: the geometry has
+    // cut cells (a property of the whole EB index space, so of every level)
+    [[nodiscard]] bool refluxWeighted () const {
+        auto const* factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[0][0].get());
+        return factory && !factory->isAllRegular();
+    }
 
 private:
 

@@ -97,6 +97,8 @@ MLEBABecLap::define (const Vector<Geometry>& a_geom,
 void
 MLEBABecLap::define_ab_coeffs ()
 {
+    m_reflux_cvol.clear(); // the geometry may have changed
+    m_reflux_cvol.resize(m_num_amr_levels);
     m_a_coeffs.resize(m_num_amr_levels);
     m_b_coeffs.resize(m_num_amr_levels);
     m_cc_mask.resize(m_num_amr_levels);
@@ -783,6 +785,58 @@ MLEBABecLap::averageDownCoeffsSameAmrLevel (int amrlev, Vector<MultiFab>& a,
                      });
 #endif
             }
+        }
+    }
+}
+
+void
+MLEBABecLap::prepareReflux (int crse_amrlev, YAFluxRegister& fluxreg,
+                            const MultiFab& /*crse_sol*/, MultiFab& /*fine_sol*/) const
+{
+    if (!refluxWeighted()) { return; }
+    auto const* factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[crse_amrlev][0].get());
+
+    // The fluxes get multiplied by the face area fraction times the face
+    // area, and the register divides by the coarse cell volume times kappa
+    // (1 in covered cells, which get no flux).
+    auto& cvol = m_reflux_cvol[crse_amrlev];
+    if (!cvol.ok()) {
+        cvol.define(m_grids[crse_amrlev][0], m_dmap[crse_amrlev][0], 1, 0, MFInfo(), *factory);
+        MultiFab::Copy(cvol, factory->getVolFrac(), 0, 0, 1, 0);
+        EB_set_covered(cvol, 1.0_rt);
+        const Real* dx = m_geom[crse_amrlev][0].CellSize();
+        cvol.mult(AMREX_D_TERM(dx[0], *dx[1], *dx[2]));
+    }
+    fluxreg.setCrseVolume(&cvol);
+}
+
+void
+MLEBABecLap::adjustRefluxFluxes (int amrlev, const MFIter& mfi, const Box& tbx, bool face_only,
+                                 const Array<FArrayBox*,AMREX_SPACEDIM>& flux,
+                                 const FArrayBox& /*sol*/) const
+{
+    if (!refluxWeighted()) { return; }
+
+    // A level without an EB factory is regular (all area fractions 1).
+    auto const* factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[amrlev][0].get());
+    if (factory && factory->getMultiEBCellFlagFab()[mfi].getType(tbx) == FabType::covered) {
+        return; // zero fluxes
+    }
+    const Real* dx = m_geom[amrlev][0].CellSize();
+    const Real dv = AMREX_D_TERM(dx[0], *dx[1], *dx[2]);
+    const int ncomp = getNComp();
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        const Real face_area = dv / dx[idim];
+        Array4<Real const> ap;
+        if (factory && factory->getAreaFrac()[idim]->ok(mfi)) {
+            ap = factory->getAreaFrac()[idim]->const_array(mfi);
+        }
+        auto const& f = flux[idim]->array();
+        for (Box const& fbx : refluxFaceBoxes(tbx, idim, face_only)) {
+            ParallelFor(fbx, ncomp, [=] AMREX_GPU_DEVICE (int i, int j, int k, int n) noexcept
+            {
+                f(i,j,k,n) *= ap ? ap(i,j,k) * face_area : face_area;
+            });
         }
     }
 }

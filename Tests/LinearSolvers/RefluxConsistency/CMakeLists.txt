@@ -12,6 +12,9 @@ foreach(D IN LISTS AMReX_SPACEDIM)
     set(_input_files inputs)
 
     set(_ops abeclap tensor)
+    if (AMReX_EB)
+       list(APPEND _ops ebabeclap ebtensor)
+    endif ()
 
     foreach(_op IN LISTS _ops)
        setup_test(${D} _sources _input_files

@@ -543,18 +543,12 @@ MLEBTensorOp::compFlux (int amrlev, const Array<MultiFab*,AMREX_SPACEDIM>& fluxe
     }
 
     const int mglev = 0;
-    const int ncomp = getNComp();
     MLEBABecLap::compFlux(amrlev, fluxes, sol, loc);
 
     if (mglev >= m_kappa[amrlev].size()) { return; }
 
     const auto *factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[amrlev][mglev].get());
     const FabArray<EBCellFlagFab>* flags = (factory) ? &(factory->getMultiEBCellFlagFab()) : nullptr;
-    auto area = (factory) ? factory->getAreaFrac()
-        : Array<const MultiCutFab*,AMREX_SPACEDIM>{AMREX_D_DECL(nullptr,nullptr,nullptr)};
-
-    Array<MultiFab,AMREX_SPACEDIM>& fluxmf = m_tauflux[amrlev][mglev];
-    Real bscalar = m_b_scalar;
 
     compCrossTerms(amrlev, mglev, sol, m_bndry_sol[amrlev].get());
 
@@ -570,75 +564,99 @@ MLEBTensorOp::compFlux (int amrlev, const Array<MultiFab*,AMREX_SPACEDIM>& fluxe
         auto fabtyp = (flags) ? (*flags)[mfi].getType(bx) : FabType::regular;
         if (fabtyp == FabType::covered) { continue; }
 
-        if (fabtyp == FabType::regular)
-        {
-            for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-              const Box& nbx = mfi.nodaltilebox(idim);
-              Array4<Real      > dst = fluxes[idim]->array(mfi);
-              Array4<Real const> src = fluxmf[idim].array(mfi);
-              AMREX_HOST_DEVICE_FOR_4D (nbx, ncomp, i, j, k, n,
-              {
-                  dst(i,j,k,n) += bscalar*src(i,j,k,n);
-              });
-            }
+        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+            addCrossTermFlux(amrlev, mfi, fabtyp, loc, idim, mfi.nodaltilebox(idim),
+                             fluxes[idim]->array(mfi));
         }
-        else if ( loc==Location::FaceCenter )
-        {
-            for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-              const Box& nbx = mfi.nodaltilebox(idim);
-              Array4<Real      > dst = fluxes[idim]->array(mfi);
-              Array4<Real const> src = fluxmf[idim].array(mfi);
-              Array4<Real const> const& ap = area[idim]->array(mfi);
-
-              AMREX_LAUNCH_HOST_DEVICE_LAMBDA ( nbx, tbx,
-              {
-                mlebtensor_flux_0(tbx, dst, src, ap, bscalar);
-              });
-            }
-        }
-        else // loc==Location::FaceCentroid
-        {
-            const iMultiFab& ccmask = m_cc_mask[amrlev][mglev];
-
-            AMREX_D_TERM(Box const xbx = mfi.nodaltilebox(0);,
-                         Box const ybx = mfi.nodaltilebox(1);,
-                         Box const zbx = mfi.nodaltilebox(2););
-            AMREX_D_TERM(Array4<Real const> fx = fluxmf[0].const_array(mfi);,
-                         Array4<Real const> fy = fluxmf[1].const_array(mfi);,
-                         Array4<Real const> fz = fluxmf[2].const_array(mfi););
-            AMREX_D_TERM(Array4<Real      > Ax = fluxes[0]->array(mfi);,
-                         Array4<Real      > Ay = fluxes[1]->array(mfi);,
-                         Array4<Real      > Az = fluxes[2]->array(mfi););
-
-            const auto& fcent = factory->getFaceCent();
-            AMREX_D_TERM(Array4<Real const> const& apx = area[0]->const_array(mfi);,
-                         Array4<Real const> const& apy = area[1]->const_array(mfi);,
-                         Array4<Real const> const& apz = area[2]->const_array(mfi););
-            AMREX_D_TERM(Array4<Real const> const& fcx = fcent[0]->const_array(mfi);,
-                         Array4<Real const> const& fcy = fcent[1]->const_array(mfi);,
-                         Array4<Real const> const& fcz = fcent[2]->const_array(mfi););
-            Array4<int const> const& msk = ccmask.const_array(mfi);
-
-            int face_only = 0;
-
-            AMREX_LAUNCH_HOST_DEVICE_LAMBDA_DIM (
-                xbx, txbx,
-                {
-                  mlebtensor_flux_x(txbx, Ax, fx, apx, fcx, bscalar, msk, face_only, xbx);
-                }
-                , ybx, tybx,
-                {
-                  mlebtensor_flux_y(tybx, Ay, fy, apy, fcy, bscalar, msk, face_only, ybx);
-                }
-                , zbx, tzbx,
-                {
-                  mlebtensor_flux_z(tzbx, Az, fz, apz, fcz, bscalar, msk, face_only, zbx);
-                }
-            );
-
-        }
-
     }
+}
+
+void
+MLEBTensorOp::addCrossTermFlux (int amrlev, const MFIter& mfi, FabType fabtyp, Location loc,
+                                int idim, const Box& fbx, Array4<Real> const& dst) const
+{
+    const Real bscalar = m_b_scalar;
+    Array4<Real const> const& src = m_tauflux[amrlev][0][idim].const_array(mfi);
+    if (fabtyp == FabType::regular) {
+        ParallelFor(fbx, getNComp(), [=] AMREX_GPU_DEVICE (int i, int j, int k, int n) noexcept
+        {
+            dst(i,j,k,n) += bscalar*src(i,j,k,n);
+        });
+        return;
+    }
+
+    const auto* factory = static_cast<EBFArrayBoxFactory const*>(m_factory[amrlev][0].get());
+    Array4<Real const> const& ap = factory->getAreaFrac()[idim]->const_array(mfi);
+    if (loc == Location::FaceCenter) {
+        AMREX_LAUNCH_HOST_DEVICE_LAMBDA ( fbx, tbx,
+        {
+            mlebtensor_flux_0(tbx, dst, src, ap, bscalar);
+        });
+        return;
+    }
+
+    // Interpolated to the face centroids
+    Array4<Real const> const& fc = factory->getFaceCent()[idim]->const_array(mfi);
+    Array4<int const> const& msk = m_cc_mask[amrlev][0].const_array(mfi);
+    if (idim == 0) {
+        AMREX_LAUNCH_HOST_DEVICE_LAMBDA ( fbx, tbx,
+        {
+            mlebtensor_flux_x(tbx, dst, src, ap, fc, bscalar, msk, 0, fbx);
+        });
+    } else if (idim == 1) {
+        AMREX_LAUNCH_HOST_DEVICE_LAMBDA ( fbx, tbx,
+        {
+            mlebtensor_flux_y(tbx, dst, src, ap, fc, bscalar, msk, 0, fbx);
+        });
+    }
+#if (AMREX_SPACEDIM == 3)
+    else {
+        AMREX_LAUNCH_HOST_DEVICE_LAMBDA ( fbx, tbx,
+        {
+            mlebtensor_flux_z(tbx, dst, src, ap, fc, bscalar, msk, 0, fbx);
+        });
+    }
+#endif
+}
+
+void
+MLEBTensorOp::prepareReflux (int crse_amrlev, YAFluxRegister& fluxreg,
+                             const MultiFab& crse_sol, MultiFab& fine_sol) const
+{
+    MLEBABecLap::prepareReflux(crse_amrlev, fluxreg, crse_sol, fine_sol);
+
+    // The cross-term fluxes of both levels, for adjustRefluxFluxes
+    const int fine_amrlev = crse_amrlev+1;
+    if (!m_kappa[crse_amrlev].empty()) {
+        compCrossTerms(crse_amrlev, 0, crse_sol, m_bndry_sol[crse_amrlev].get());
+    }
+    if (!m_kappa[fine_amrlev].empty()) {
+        compCrossTerms(fine_amrlev, 0, fine_sol, m_bndry_sol[fine_amrlev].get());
+    }
+}
+
+void
+MLEBTensorOp::adjustRefluxFluxes (int amrlev, const MFIter& mfi, const Box& tbx, bool face_only,
+                                  const Array<FArrayBox*,AMREX_SPACEDIM>& flux,
+                                  const FArrayBox& sol) const
+{
+    const auto* factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[amrlev][0].get());
+    const auto fabtyp = (factory) ? factory->getMultiEBCellFlagFab()[mfi].getType(tbx)
+                                  : FabType::regular;
+    if (fabtyp == FabType::covered) { return; } // zero fluxes
+
+    // Add the cross-term fluxes at the face centroids, as compFlux does
+    if (!m_kappa[amrlev].empty()) {
+        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+            for (Box const& fbx : refluxFaceBoxes(tbx, idim, face_only)) {
+                addCrossTermFlux(amrlev, mfi, fabtyp, Location::FaceCentroid, idim, fbx,
+                                 flux[idim]->array());
+            }
+        }
+    }
+
+    // Then weight them all with the EB area and volume fractions
+    MLEBABecLap::adjustRefluxFluxes(amrlev, mfi, tbx, face_only, flux, sol);
 }
 
 void

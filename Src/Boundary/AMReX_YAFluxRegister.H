@@ -161,9 +161,12 @@ public:
         crse_cell = 0, crse_fine_boundary_cell, fine_cell
     };
 
-    //! For curvilinear coordinates only, where the supplied flux has already
-    //! been multiplied by area. Provide the coarse-volume MultiFab \p cvol and
-    //! keep it alive for the register lifetime (YAFluxRegister does not copy it).
+    //! For fluxes that have already been multiplied by the face area (for
+    //! example with curvilinear coordinates, or by the EB area fractions).
+    //! Provide the matching coarse cell volumes \p cvol (for EB, times the
+    //! volume fractions, with a nonzero value such as the cell volume in
+    //! covered cells, because Reflux divides every cell by it) and keep them
+    //! alive for the register lifetime (YAFluxRegister does not copy them).
     void setCrseVolume (MF const* cvol) { m_cvol = cvol; }
 
     //! Enable deterministic mode for GPU operations via \p flag (uses deterministic reductions).

@@ -731,6 +731,13 @@ as living at face centroids, modify the setBCoeffs command to be
 
     ml_ebabeclap->setBCoeffs(lev, beta, MLMG::Location::FaceCentroid);
 
+In multi-level solves, the coarse/fine correction (reflux) of
+:cpp:`MLEBABecLap` uses the EB area fractions of the faces and the volume
+fractions of the coarse cells, the same weights as the operator in a cut cell.
+The composite operator in a coarse cell next to the fine level is therefore the
+discrete divergence of the area-weighted fine fluxes on its coarse/fine faces,
+as in cells away from the embedded boundary.
+
 The nodal finite-difference operator :cpp:`MLEBNodeFDLaplacian` takes an
 :cpp:`EBFArrayBoxFactory` only on the finest AMR level.  It builds the EB
 information it needs on the multigrid levels from that factory by itself, so
@@ -1164,9 +1171,10 @@ counterparts on an operator that has already been used will abort on the next
 call.  Build a new operator when the viscosities change.
 
 In multi-level solves and ``apply`` calls, the coarse/fine correction (reflux)
-of :cpp:`MLTensorOp` includes the cross-term fluxes as well as the
-:cpp:`MLABecLaplacian` part, so the operator in a coarse cell next to the fine
-level uses the full fine-level fluxes of the viscous stress.
+of :cpp:`MLTensorOp` and :cpp:`MLEBTensorOp` includes the cross-term fluxes as
+well as the :cpp:`MLABecLaplacian` or :cpp:`MLEBABecLap` part, so the operator
+in a coarse cell next to the fine level uses the full fine-level fluxes of the
+viscous stress.
 
 Multi-Component Operators
 =========================

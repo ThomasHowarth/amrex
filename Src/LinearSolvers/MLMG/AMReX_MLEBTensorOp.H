@@ -262,6 +262,18 @@ public: // for cuda
      */
     void compCrossTerms(int amrlev, int mglev, MultiFab const& mf,
                         const MLMGBndry* bndry) const;
+
+    //! Add the cross-term fluxes from compCrossTerms, times b, to \p dst on
+    //! the faces \p fbx in direction \p idim of a tile of type \p fabtyp.
+    void addCrossTermFlux (int amrlev, const MFIter& mfi, FabType fabtyp, Location loc,
+                           int idim, const Box& fbx, Array4<Real> const& dst) const;
+
+    //! Refluxing includes the cross-term fluxes (weighted like the others).
+    void prepareReflux (int crse_amrlev, YAFluxRegister& fluxreg,
+                        const MultiFab& crse_sol, MultiFab& fine_sol) const final;
+    void adjustRefluxFluxes (int amrlev, const MFIter& mfi, const Box& tbx, bool face_only,
+                             const Array<FArrayBox*,AMREX_SPACEDIM>& flux,
+                             const FArrayBox& sol) const final;
 };
 
 }
