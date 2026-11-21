@@ -1,0 +1,21 @@
+# Consistency of MLEBABecLap::apply with getFluxes/getEBFluxes for a random phi.
+#
+# Known failures on development (not run by ctest):
+#  - max_level=1: cut coarse cells next to the fine level, because reflux
+#    ignores the EB area and volume fractions.
+#  - inhomog_neumann or robin on a wall that the EB crosses, e.g.
+#    lo_bc = inhomog_neumann ... with eb2.sphere_center = 0.1 0.5 0.5 (#6169).
+amrex.fpe_trap_invalid = 1
+
+n_cell = 32
+max_grid_size = 16
+max_level = 0
+
+lo_bc = dirichlet dirichlet dirichlet
+hi_bc = dirichlet dirichlet dirichlet
+eb_bc = dirichlet
+
+eb2.geom_type = sphere
+eb2.sphere_center = 0.5 0.5 0.5
+eb2.sphere_radius = 0.3
+eb2.sphere_has_fluid_inside = 0
