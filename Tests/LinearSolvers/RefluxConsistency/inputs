@@ -1,0 +1,11 @@
+# Two-level operator against the coarse operator plus the reflux correction
+# from MLMG::getFluxes (see main.cpp). op: abeclap, tensor, ebabeclap, ebtensor
+op = tensor
+n_cell = 32
+max_grid_size = 16
+fine_lo = 0.25 0.25 0.25
+fine_hi = 0.75 0.75 0.75
+bc = dirichlet
+max_rel_err = 1.e-10
+
+amrex.fpe_trap_invalid = 1
