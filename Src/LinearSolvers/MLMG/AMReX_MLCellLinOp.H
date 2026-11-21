@@ -378,6 +378,36 @@ public:
                         const FAB& sol, Location loc, int face_only=0) const = 0;
 
     /**
+     * \brief Hooks for operators whose fluxes for refluxing at the
+     * coarse/fine boundary differ from FFlux's (for example, weighted by EB
+     * area and volume fractions, or with the cross terms of a tensor
+     * operator added).
+     *
+     * prepareReflux is called before the fluxes of \p crse_sol and \p
+     * fine_sol are added to \p fluxreg, the register between levels \p
+     * crse_amrlev and \p crse_amrlev+1; the ghost cells of \p fine_sol have
+     * just been filled by applyBC, and an operator may fill more of them.
+     * adjustRefluxFluxes is called on the fluxes from FFlux of \p sol on
+     * tile \p tbx of level \p amrlev before they are added (with \p
+     * face_only, only the faces on the tile boundary have fluxes). The
+     * defaults do nothing.
+     */
+    virtual void prepareReflux (int /*crse_amrlev*/, YAFluxRegisterT<MF>& /*fluxreg*/,
+                                const MF& /*crse_sol*/, MF& /*fine_sol*/) const {}
+    virtual void adjustRefluxFluxes (int /*amrlev*/, const MFIter& /*mfi*/, const Box& /*tbx*/,
+                                     bool /*face_only*/,
+                                     const Array<FAB*,AMREX_SPACEDIM>& /*flux*/,
+                                     const FAB& /*sol*/) const {}
+
+    //! The faces in direction \p idim of tile \p tbx that have reflux
+    //! fluxes: all of them, or with \p face_only those on the tile boundary.
+    [[nodiscard]] static Vector<Box> refluxFaceBoxes (const Box& tbx, int idim, bool face_only)
+    {
+        if (face_only) { return {amrex::bdryLo(tbx,idim), amrex::bdryHi(tbx,idim)}; }
+        return {amrex::surroundingNodes(tbx,idim)};
+    }
+
+    /**
      * \brief Optional hook for adding inhomogeneous Neumann contributions.
      *
      * Default implementation is a no-op; derived classes override if needed.  The
@@ -1689,6 +1719,8 @@ MLCellLinOpT<MF>::reflux (int crse_amrlev, MF& res, const MF& crse_sol, const MF
     applyBC(fine_amrlev, mglev, fine_sol, BCMode::Inhomogeneous, StateMode::Solution,
             m_bndry_sol[fine_amrlev].get());
 
+    prepareReflux(crse_amrlev, fluxreg, crse_sol, fine_sol);
+
     MFItInfo mfi_info;
     if (Gpu::notInLaunchRegion()) { mfi_info.EnableTiling().SetDynamic(true); }
 
@@ -1709,6 +1741,7 @@ MLCellLinOpT<MF>::reflux (int crse_amrlev, MF& res, const MF& crse_sol, const MF
                              flux[1].resize(amrex::surroundingNodes(tbx,1),ncomp,The_Async_Arena());,
                              flux[2].resize(amrex::surroundingNodes(tbx,2),ncomp,The_Async_Arena()););
                 FFlux(crse_amrlev, mfi, pflux, crse_sol[mfi], Location::FaceCentroid);
+                adjustRefluxFluxes(crse_amrlev, mfi, tbx, false, pflux, crse_sol[mfi]);
                 fluxreg.CrseAdd(mfi, cpflux, crse_dx, dt, RunOn::Gpu);
             }
         }
@@ -1727,6 +1760,7 @@ MLCellLinOpT<MF>::reflux (int crse_amrlev, MF& res, const MF& crse_sol, const MF
                              flux[1].resize(amrex::surroundingNodes(tbx,1),ncomp,The_Async_Arena());,
                              flux[2].resize(amrex::surroundingNodes(tbx,2),ncomp,The_Async_Arena()););
                 FFlux(fine_amrlev, mfi, pflux, fine_sol[mfi], Location::FaceCentroid, face_only);
+                adjustRefluxFluxes(fine_amrlev, mfi, tbx, face_only, pflux, fine_sol[mfi]);
                 fluxreg.FineAdd(mfi, cpflux, fine_dx, dt, RunOn::Gpu);
             }
         }

@@ -1163,6 +1163,11 @@ operators do not support updating coefficients in place: calling
 counterparts on an operator that has already been used will abort on the next
 call.  Build a new operator when the viscosities change.
 
+In multi-level solves and ``apply`` calls, the coarse/fine correction (reflux)
+of :cpp:`MLTensorOp` includes the cross-term fluxes as well as the
+:cpp:`MLABecLaplacian` part, so the operator in a coarse cell next to the fine
+level uses the full fine-level fluxes of the viscous stress.
+
 Multi-Component Operators
 =========================
 

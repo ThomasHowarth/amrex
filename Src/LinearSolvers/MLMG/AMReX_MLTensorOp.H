@@ -282,6 +282,21 @@ public: // for cuda
     void applyBCTensor (int amrlev, int mglev, MF& vel,
                         BCMode bc_mode, StateMode s_mode, const MLMGBndryT<MF>* bndry
                         ) const;
+
+    //! The cross-term fluxes (without b scalar) of \p sol, the solution on
+    //! tile \p mfi of AMR level \p amrlev with its ghost cells filled
+    //! (applyBC and applyBCTensor), on the face boxes \p fbx.
+    void compCrossTermFluxes (int amrlev, const MFIter& mfi, const FAB& sol,
+                              const Array<Box,AMREX_SPACEDIM>& fbx,
+                              Array<FAB,AMREX_SPACEDIM>& cflux) const;
+
+    //! Refluxing includes the cross-term fluxes, which need the tensor
+    //! ghost cells of the fine solution (applyBCTensor).
+    void prepareReflux (int crse_amrlev, YAFluxRegisterT<MF>& fluxreg,
+                        const MF& crse_sol, MF& fine_sol) const override;
+    void adjustRefluxFluxes (int amrlev, const MFIter& mfi, const Box& tbx, bool face_only,
+                             const Array<FAB*,AMREX_SPACEDIM>& flux,
+                             const FAB& sol) const override;
 };
 
 template <typename MF>
