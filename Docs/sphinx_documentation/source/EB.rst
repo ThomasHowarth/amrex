@@ -259,6 +259,43 @@ if it is false, the boundary is taken from the STL mesh itself. A grid box that
 no triangle touches is classified as entirely regular or entirely covered from
 a single point, which is correct only for a water-tight mesh.
 
+**Build the Complement of a Geometry**
+
+Some applications need the region a geometry covers as a second geometry, for
+example the solid in a conjugate heat transfer calculation in which the first
+geometry is the fluid. After building the geometry, call
+
+.. highlight:: c++
+
+::
+
+    EB2::IndexSpace const* EB2::BuildComplement (const Geometry& geom,
+                                                 int required_coarsening_level,
+                                                 int max_coarsening_level,
+                                                 int ngrow = 4);
+
+It builds the complement of the geometry of :cpp:`EB2::IndexSpace::top()` on
+the same :cpp:`Geometry` and returns its :cpp:`EB2::IndexSpace`. Use the same
+coarsening parameters and ``ngrow`` as for the geometry. The complement is built
+from the geometry's data rather than from an implicit function, so the two are
+exact complements of each other. Cells that are regular in one are covered in
+the other. In a cut cell, the volume fractions add up to one, the boundary area
+and centroid are the same, and the boundary normals are opposite. On every face,
+the area fractions add up to one. An exception is a boundary that lies exactly
+on cell faces, as for a box aligned with the grid. There, the face is closed on
+both sides, and the boundary belongs to the cell on each geometry's side of the
+face. The coarse levels of the complement are coarsened from its finest level.
+
+The geometry stays on top of the stack, so code that uses
+:cpp:`EB2::IndexSpace::top()` keeps using it. To use the complement, pass the
+returned pointer, for example to :cpp:`makeEBFabFactory` (see below).
+
+A cell that the geometry almost fills gives a very small cell in the complement,
+because the small cells that EB2 removes are only those of the geometry. The
+complement does not support multi-valued cells, shifted geometries, face-centered
+EB data or :cpp:`EB2::addFineLevels`. It also aborts if it would have a cell with
+boundary on two opposite faces, such as a body one cell thick.
+
 **Managing IndexSpace Objects**
 
 Regardless of which :cpp:`Build` variant is used, the newly built

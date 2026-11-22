@@ -102,6 +102,10 @@ foreach(D IN LISTS AMReX_SPACEDIM)
        AMReX_EB2_Level_chkpt_file.cpp
        AMReX_EB2_IndexSpace_chkpt_file.H
        AMReX_EB2_IndexSpace_chkpt_file.cpp
+       AMReX_EB2_Level_complement.H
+       AMReX_EB2_Level_complement.cpp
+       AMReX_EB2_IndexSpace_complement.H
+       AMReX_EB2_IndexSpace_complement.cpp
        )
 
     if (D EQUAL 3)

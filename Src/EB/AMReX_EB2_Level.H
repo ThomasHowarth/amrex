@@ -36,6 +36,7 @@ namespace amrex
 namespace amrex::EB2 {
 
 class IndexSpace;
+class ComplementLevel;
 template <typename G> class GShopLevel;
 template <typename G> class IndexSpaceImp;
 
@@ -302,6 +303,8 @@ protected:
 
 private:
     template <typename G> friend class GShopLevel;
+    // So that it can build a level from all the data of another level.
+    friend class ComplementLevel;
     // So that it can update m_parent when a level changes owner.
     template <typename G> friend class IndexSpaceImp;
 

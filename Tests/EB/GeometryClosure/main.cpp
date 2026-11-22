@@ -25,6 +25,17 @@
 //  decomp     The data does not depend on the box decomposition
 //             (max_grid_size against max_grid_size_2).
 //
+// With complement = 1, the same checks are also run on the complement of the
+// geometry (EB2::BuildComplement), together with
+//
+//  complement The two geometries are exact complements: regular cells of one
+//             are covered in the other and cut cells are cut in both, the
+//             volume fractions and the area fractions add up to one, the first
+//             moments of the two parts of a cell or face add up to zero, and
+//             the boundary areas and centroids are the same, with opposite
+//             normals. On the coarsened levels, this checks that coarsening
+//             the complement gives the complement of the coarsened geometry.
+//
 // The relative errors are printed per level and check, and the run aborts if
 // one exceeds its bound.
 
@@ -204,6 +215,245 @@ Real decomp_diff (MultiFab const& a, MultiFab const& b)
     return r;
 }
 
+// Largest error in the complement relations between g and its complement c,
+// cell by cell (location returned in where) and face by face.
+//
+// Where the boundary lies on a face, the face is closed on both sides, and the
+// boundary belongs to a different cell in each geometry: the cell on its side,
+// which g fills completely (cut, volume fraction 1) and c covers. With w the
+// closed part of a face, 1 - a_g - a_c, the boundary area vectors of each cell
+// then add up to the closed parts of its faces, with outward normals. That holds
+// on the level EB2 builds. On the levels it coarsens, the boundary area is a sum
+// of areas rather than of area vectors, and a cell that gets boundary from a face
+// combines it with its own as one area vector, so with boundary on faces
+// (nonzero on_face, counted on the finest level) the boundary data no longer
+// match there (eb_exact = false), and coarse faces can be partly closed.
+Real complement_diff (GeomData const& g, GeomData const& c, Geometry const& geom,
+                      bool eb_exact, bool finest, Long& on_face_cells, IntVect& where)
+{
+    auto const dx = geom.CellSizeArray();
+    Real const dv = AMREX_D_TERM(dx[0], *dx[1], *dx[2]);
+    GpuArray<Real,AMREX_SPACEDIM> fa;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) { fa[d] = dv / dx[d]; }
+    Real const amax = *std::max_element(fa.begin(), fa.end());
+
+    MultiFab err(g.vfrac.boxArray(), g.vfrac.DistributionMap(), 2, 0);
+    auto const& gf = g.flag.const_arrays();
+    auto const& cf = c.flag.const_arrays();
+    auto const& gv = g.vfrac.const_arrays();
+    auto const& cv = c.vfrac.const_arrays();
+    auto const& gc = g.vcent.const_arrays();
+    auto const& cc = c.vcent.const_arrays();
+    auto const& gba = g.barea.const_arrays();
+    auto const& cba = c.barea.const_arrays();
+    auto const& gbc = g.bcent.const_arrays();
+    auto const& cbc = c.bcent.const_arrays();
+    auto const& gbn = g.bnorm.const_arrays();
+    auto const& cbn = c.bnorm.const_arrays();
+    GpuArray<MultiArray4<Real const>,AMREX_SPACEDIM> gap, cap;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        gap[d] = g.apert[d].const_arrays();
+        cap[d] = c.apert[d].const_arrays();
+    }
+    auto const& e = err.arrays();
+    ParallelFor(err, [=] AMREX_GPU_DEVICE (int b, int i, int j, int k)
+    {
+        IntVect const iv(AMREX_D_DECL(i,j,k));
+        int const f = gf[b](iv);
+        int const fc = cf[b](iv);
+        Real const v = gv[b](iv);
+        Real const vc = cv[b](iv);
+        bool const flags_ok = (f == 0 && fc == 2) || (f == 2 && fc == 0) || (f == 1 && fc == 1)
+            || (f == 1 && v >= 1.0_rt && fc == 2) || (f == 2 && fc == 1 && vc >= 1.0_rt);
+        Real r = flags_ok ? 0.0_rt : 1.0_rt;
+        r = amrex::max(r, std::abs(v + vc - 1.0_rt));
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+            r = amrex::max(r, std::abs(v*gc[b](iv,d) + vc*cc[b](iv,d)));
+        }
+
+        Real sg = 0.0_rt, sc = 0.0_rt;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+            sg += (gbn[b](iv,d) * fa[d]) * (gbn[b](iv,d) * fa[d]);
+            sc += (cbn[b](iv,d) * fa[d]) * (cbn[b](iv,d) * fa[d]);
+        }
+        Real const aeb = gba[b](iv) * std::sqrt(sg);
+        Real const aebc = cba[b](iv) * std::sqrt(sc);
+        bool on_face = false;
+        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+            IntVect const hi = iv + IntVect::TheDimensionVector(d);
+            Real const wlo = 1.0_rt - gap[d][b](iv) - cap[d][b](iv);
+            Real const whi = 1.0_rt - gap[d][b](hi) - cap[d][b](hi);
+            on_face = on_face || wlo > 0.0_rt || whi > 0.0_rt;
+        }
+        e[b](iv,1) = on_face ? 1.0_rt : 0.0_rt;
+        if (eb_exact) {
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                IntVect const hi = iv + IntVect::TheDimensionVector(d);
+                Real const wlo = 1.0_rt - gap[d][b](iv) - cap[d][b](iv);
+                Real const whi = 1.0_rt - gap[d][b](hi) - cap[d][b](hi);
+                Real const rv = aeb * gbn[b](iv,d) + aebc * cbn[b](iv,d) - (whi - wlo) * fa[d];
+                r = amrex::max(r, std::abs(rv) / amax);
+            }
+        }
+        if (eb_exact && f == 1 && fc == 1 && !on_face) {
+            r = amrex::max(r, std::abs(gba[b](iv) - cba[b](iv)));
+            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+                r = amrex::max(r, std::abs(gbc[b](iv,d) - cbc[b](iv,d)),
+                               std::abs(gbn[b](iv,d) + cbn[b](iv,d)));
+            }
+        }
+        e[b](iv) = r;
+    });
+    Real r = err.max(0);
+    where = err.maxIndex(0);
+    on_face_cells = Long(err.sum(1));
+
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        MultiFab ferr(g.apert[d].boxArray(), g.apert[d].DistributionMap(), 1, 0);
+        auto const& ga = g.apert[d].const_arrays();
+        auto const& ca = c.apert[d].const_arrays();
+        auto const& gfc = g.fcent[d].const_arrays();
+        auto const& cfc = c.fcent[d].const_arrays();
+        auto const& fe = ferr.arrays();
+        ParallelFor(ferr, [=] AMREX_GPU_DEVICE (int b, int i, int j, int k)
+        {
+            Real const a = ga[b](i,j,k);
+            Real const ac = ca[b](i,j,k);
+            // On the finest level, a face closed on both sides is closed in c and
+            // partly open in g. Coarse faces can be partly closed and open on both.
+            Real q = amrex::max(a + ac - 1.0_rt, 0.0_rt);
+            bool const closed = finest ? (ac == 0.0_rt && a < 1.0_rt)
+                                       : (a + ac < 1.0_rt - 1.e-12_rt);
+            if (!closed) {
+                q = std::abs(a + ac - 1.0_rt);
+                for (int m = 0; m < AMREX_SPACEDIM-1; ++m) {
+                    q = amrex::max(q, std::abs(a*gfc[b](i,j,k,m) + ac*cfc[b](i,j,k,m)));
+                }
+            }
+            fe[b](i,j,k) = q;
+        });
+        r = amrex::max(r, ferr.norminf(0));
+    }
+    Gpu::streamSynchronize();
+    return r;
+}
+
+struct Bounds
+{
+    int max_grid_size = 16;
+    int max_grid_size_2 = 8;
+    int max_coarsening_level = 3;
+    int ngrow = 2;
+    Real max_err = 1.e-12;
+    Real max_vol_err = -1.0;
+    Real max_coarse_area_err = -1.0;
+};
+
+// Runs the checks on every level of index_space, and the complement checks
+// against base if it is given. Returns true if a check failed.
+bool check_index_space (EB2::IndexSpace const* index_space, EB2::IndexSpace const* base,
+                        Geometry const& geom, Bounds const& p)
+{
+    Real worst[nchecks] = {};
+    Real worst_coarse_area = 0.0_rt;
+    Real worst_complement = 0.0_rt;
+    Long on_face_cells = 0;
+    for (int lev = 0; lev <= p.max_coarsening_level; ++lev) {
+        IntVect const ratio(1 << lev);
+        if (!geom.Domain().coarsenable(ratio)) { break; }
+        Geometry const cgeom = amrex::coarsen(geom, ratio);
+        Vector<int> const ng{p.ngrow, p.ngrow, p.ngrow};
+
+        BoxArray ba(cgeom.Domain());
+        ba.maxSize(std::max(p.max_grid_size >> lev, 1));
+        DistributionMapping dm(ba);
+        auto fact = makeEBFabFactory(index_space, cgeom, ba, dm, ng, EBSupport::full);
+        GeomData g(*fact);
+
+        Real errs[nchecks] = {};
+        IntVect where[nchecks];
+
+        MultiFab err(ba, dm, nchecks, 0);
+        cell_checks(g, cgeom, err);
+        for (int n = flags; n <= volume; ++n) {
+            errs[n] = err.max(n);
+            where[n] = err.maxIndex(n);
+        }
+
+        for (auto const* mf : g.cellData()) {
+            errs[ghost] = amrex::max(errs[ghost], ghost_diff(*mf, cgeom));
+        }
+        for (auto const* mf : g.faceData()) {
+            errs[ghost] = amrex::max(errs[ghost], ghost_diff(*mf, cgeom));
+        }
+
+        BoxArray ba2(cgeom.Domain());
+        ba2.maxSize(std::max(p.max_grid_size_2 >> lev, 1));
+        DistributionMapping dm2(ba2);
+        auto fact2 = makeEBFabFactory(index_space, cgeom, ba2, dm2, ng, EBSupport::full);
+        GeomData g2(*fact2);
+        auto c1 = g.cellData(), c2 = g2.cellData();
+        for (int m = 0; m < int(c1.size()); ++m) {
+            errs[decomp] = amrex::max(errs[decomp], decomp_diff(*c1[m], *c2[m]));
+        }
+        auto f1 = g.faceData(), f2 = g2.faceData();
+        for (int m = 0; m < int(f1.size()); ++m) {
+            errs[decomp] = amrex::max(errs[decomp], decomp_diff(*f1[m], *f2[m]));
+        }
+
+        amrex::Print() << "Level " << lev << " (" << cgeom.Domain().size() << " cells, "
+                       << ba.size() << " boxes):\n";
+        for (int n = 0; n < nchecks; ++n) {
+            amrex::Print() << "  " << check_name[n] << ": " << errs[n];
+            if (n <= volume && errs[n] > 0.0_rt) { amrex::Print() << " at " << where[n]; }
+            amrex::Print() << "\n";
+            if (n == area && lev > 0) {
+                worst_coarse_area = amrex::max(worst_coarse_area, errs[n]);
+            } else {
+                worst[n] = amrex::max(worst[n], errs[n]);
+            }
+        }
+
+        if (base) {
+            auto bfact = makeEBFabFactory(base, cgeom, ba, dm, ng, EBSupport::full);
+            GeomData gb(*bfact);
+            IntVect cwhere;
+            Long nface = 0;
+            Real const cerr = complement_diff(gb, g, cgeom, lev == 0 || on_face_cells == 0,
+                                              lev == 0, nface, cwhere);
+            if (lev == 0) { on_face_cells = nface; }
+            amrex::Print() << "  complement: " << cerr;
+            if (cerr > 0.0_rt) { amrex::Print() << " at " << cwhere; }
+            if (lev == 0 && nface > 0) {
+                amrex::Print() << " (" << nface << " cells with boundary on faces)";
+            }
+            amrex::Print() << "\n";
+            worst_complement = amrex::max(worst_complement, cerr);
+        }
+    }
+
+    bool failed = false;
+    for (int n = 0; n < nchecks; ++n) {
+        Real const bound = (n == volume) ? p.max_vol_err : p.max_err;
+        if (bound >= 0.0_rt && worst[n] > bound) {
+            amrex::Print() << "FAILED: " << check_name[n] << " error " << worst[n]
+                           << " > " << bound << "\n";
+            failed = true;
+        }
+    }
+    if (p.max_coarse_area_err >= 0.0_rt && worst_coarse_area > p.max_coarse_area_err) {
+        amrex::Print() << "FAILED: area error on the coarsened levels " << worst_coarse_area
+                       << " > " << p.max_coarse_area_err << "\n";
+        failed = true;
+    }
+    if (base && worst_complement > p.max_err) {
+        amrex::Print() << "FAILED: complement error " << worst_complement
+                       << " > " << p.max_err << "\n";
+        failed = true;
+    }
+    return failed;
+}
+
 } // namespace
 
 int main (int argc, char* argv[])
@@ -211,23 +461,19 @@ int main (int argc, char* argv[])
     amrex::Initialize(argc, argv);
     {
         Vector<int> n_cell_in{32};
-        int max_grid_size = 16;
-        int max_grid_size_2 = 8;
-        int max_coarsening_level = 3;
-        int ngrow = 2;
-        Real max_err = 1.e-12;     // flags, bounds, area, ghost, decomp
-        Real max_vol_err = -1.0;   // volume (negative: not checked)
-        Real max_coarse_area_err = -1.0; // area on coarsened levels
+        Bounds p;
+        bool complement = false;
         {
             ParmParse pp;
             pp.queryarr("n_cell", n_cell_in);
-            pp.query("max_grid_size", max_grid_size);
-            pp.query("max_grid_size_2", max_grid_size_2);
-            pp.query("max_coarsening_level", max_coarsening_level);
-            pp.query("ngrow", ngrow);
-            pp.query("max_err", max_err);
-            pp.query("max_vol_err", max_vol_err);
-            pp.query("max_coarse_area_err", max_coarse_area_err);
+            pp.query("max_grid_size", p.max_grid_size);
+            pp.query("max_grid_size_2", p.max_grid_size_2);
+            pp.query("max_coarsening_level", p.max_coarsening_level);
+            pp.query("ngrow", p.ngrow);
+            pp.query("max_err", p.max_err);
+            pp.query("max_vol_err", p.max_vol_err);
+            pp.query("max_coarse_area_err", p.max_coarse_area_err);
+            pp.query("complement", complement);
         }
         IntVect n_cell;
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -248,80 +494,21 @@ int main (int argc, char* argv[])
         }
         Geometry geom(Box(IntVect(0), n_cell-1), rb, CoordSys::cartesian, is_periodic);
 
-        EB2::Build(geom, 0, max_coarsening_level);
+        EB2::Build(geom, 0, p.max_coarsening_level);
+        EB2::IndexSpace const* index_space = &EB2::IndexSpace::top();
 
-        Real worst[nchecks] = {};
-        Real worst_coarse_area = 0.0_rt;
-        for (int lev = 0; lev <= max_coarsening_level; ++lev) {
-            IntVect const ratio(1 << lev);
-            if (!geom.Domain().coarsenable(ratio)) { break; }
-            Geometry const cgeom = amrex::coarsen(geom, ratio);
+        bool failed = check_index_space(index_space, nullptr, geom, p);
 
-            BoxArray ba(cgeom.Domain());
-            ba.maxSize(std::max(max_grid_size >> lev, 1));
-            DistributionMapping dm(ba);
-            auto fact = makeEBFabFactory(cgeom, ba, dm, {ngrow,ngrow,ngrow}, EBSupport::full);
-            GeomData g(*fact);
-
-            Real errs[nchecks] = {};
-            IntVect where[nchecks];
-
-            MultiFab err(ba, dm, nchecks, 0);
-            cell_checks(g, cgeom, err);
-            for (int n = flags; n <= volume; ++n) {
-                errs[n] = err.max(n);
-                where[n] = err.maxIndex(n);
-            }
-
-            for (auto const* mf : g.cellData()) {
-                errs[ghost] = amrex::max(errs[ghost], ghost_diff(*mf, cgeom));
-            }
-            for (auto const* mf : g.faceData()) {
-                errs[ghost] = amrex::max(errs[ghost], ghost_diff(*mf, cgeom));
-            }
-
-            BoxArray ba2(cgeom.Domain());
-            ba2.maxSize(std::max(max_grid_size_2 >> lev, 1));
-            DistributionMapping dm2(ba2);
-            auto fact2 = makeEBFabFactory(cgeom, ba2, dm2, {ngrow,ngrow,ngrow}, EBSupport::full);
-            GeomData g2(*fact2);
-            auto c1 = g.cellData(), c2 = g2.cellData();
-            for (int m = 0; m < int(c1.size()); ++m) {
-                errs[decomp] = amrex::max(errs[decomp], decomp_diff(*c1[m], *c2[m]));
-            }
-            auto f1 = g.faceData(), f2 = g2.faceData();
-            for (int m = 0; m < int(f1.size()); ++m) {
-                errs[decomp] = amrex::max(errs[decomp], decomp_diff(*f1[m], *f2[m]));
-            }
-
-            amrex::Print() << "Level " << lev << " (" << cgeom.Domain().size() << " cells, "
-                           << ba.size() << " boxes):\n";
-            for (int n = 0; n < nchecks; ++n) {
-                amrex::Print() << "  " << check_name[n] << ": " << errs[n];
-                if (n <= volume && errs[n] > 0.0_rt) { amrex::Print() << " at " << where[n]; }
-                amrex::Print() << "\n";
-                if (n == area && lev > 0) {
-                    worst_coarse_area = amrex::max(worst_coarse_area, errs[n]);
-                } else {
-                    worst[n] = amrex::max(worst[n], errs[n]);
-                }
-            }
-        }
-
-        bool failed = false;
-        for (int n = 0; n < nchecks; ++n) {
-            Real const bound = (n == volume) ? max_vol_err : max_err;
-            if (bound >= 0.0_rt && worst[n] > bound) {
-                amrex::Print() << "FAILED: " << check_name[n] << " error " << worst[n]
-                               << " > " << bound << "\n";
+        if (complement) {
+            EB2::IndexSpace const* comp = EB2::BuildComplement(geom, 0, p.max_coarsening_level);
+            if (&EB2::IndexSpace::top() != index_space) {
+                amrex::Print() << "FAILED: the geometry is no longer the top IndexSpace\n";
                 failed = true;
             }
+            amrex::Print() << "Complement:\n";
+            failed = check_index_space(comp, index_space, geom, p) || failed;
         }
-        if (max_coarse_area_err >= 0.0_rt && worst_coarse_area > max_coarse_area_err) {
-            amrex::Print() << "FAILED: area error on the coarsened levels " << worst_coarse_area
-                           << " > " << max_coarse_area_err << "\n";
-            failed = true;
-        }
+
         if (failed) { amrex::Abort("EB2 geometry data is inconsistent"); }
         amrex::Print() << "PASSED\n";
     }

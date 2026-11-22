@@ -26,6 +26,21 @@ foreach(D IN LISTS AMReX_SPACEDIM)
                                    "n_cell=32 48 16" "geometry.is_periodic=0 1 1"
        NTASKS 2)
 
+    # The complement of the sphere
+    setup_test(${D} _sources _input_files
+       BASE_NAME EB_GeometryClosure_complement
+       RUNTIME_SUBDIR complement
+       CMDLINE_PARAMS_AFTER_INPUTS complement=1
+       NTASKS 2)
+
+    # The complement of a box aligned with the grid, with boundary on faces
+    setup_test(${D} _sources _input_files
+       BASE_NAME EB_GeometryClosure_complement_box
+       RUNTIME_SUBDIR complement_box
+       CMDLINE_PARAMS_AFTER_INPUTS complement=1 eb2.geom_type=box
+                                   "eb2.box_lo=0.25 0.25 0.25" "eb2.box_hi=0.75 0.625 0.875"
+                                   eb2.box_has_fluid_inside=0)
+
     unset(_sources)
     unset(_input_files)
 endforeach()

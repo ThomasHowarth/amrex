@@ -12,6 +12,7 @@
 #include <AMReX_EB2.H>
 #include <AMReX_EB2_IndexSpace_STL.H>
 #include <AMReX_EB2_IndexSpace_chkpt_file.H>
+#include <AMReX_EB2_IndexSpace_complement.H>
 #if (AMREX_SPACEDIM == 3)
 #  include <AMReX_MarchingCubes.H>
 #endif
@@ -285,6 +286,22 @@ BuildFromChkptFile (std::string const& fname,
     IndexSpace::push(std::make_unique<IndexSpaceChkptFile>
                      (chkpt_file, geom, required_coarsening_level, max_coarsening_level,
                       ngrow, build_coarse_level_by_coarsening, a_extend_domain_face));
+}
+
+IndexSpace const*
+BuildComplement (const Geometry& geom, int required_coarsening_level,
+                 int max_coarsening_level, int ngrow)
+{
+    BL_PROFILE("EB2::BuildComplement()");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!IndexSpace::empty(),
+        "EB2::BuildComplement: must call EB2::Build first to create the geometry");
+    IndexSpace* index_space = &IndexSpace::top();
+    auto complement = std::make_unique<IndexSpaceComplement>
+        (*index_space, geom, required_coarsening_level, max_coarsening_level, ngrow);
+    IndexSpace const* r = complement.get();
+    IndexSpace::push(std::move(complement));
+    IndexSpace::push(index_space); // already on the stack: moves it back to the top
+    return r;
 }
 
 namespace {
