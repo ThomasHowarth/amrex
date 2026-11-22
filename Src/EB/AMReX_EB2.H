@@ -268,10 +268,10 @@ void BuildFromChkptFile (std::string const& fname,
                          bool extend_domain_face = ExtendDomainFace());
 
 /**
- * \brief Build the complement of the current EB geometry.
+ * \brief Build the complement of an EB geometry.
  *
- * The complement is the region the geometry of IndexSpace::top() covers, for example the
- * solid when that geometry is the fluid. It is built from that geometry's data on \p geom
+ * The complement is the region the geometry of \p index_space covers, for example the solid
+ * when that geometry is the fluid. It is built from that geometry's data on \p geom
  * instead of from an implicit function, so the two are exact complements of each other:
  * regular cells of one are covered in the other, and in a cut cell the volume fractions add
  * up to one and the boundary area and centroid are the same with the boundary normal
@@ -279,21 +279,26 @@ void BuildFromChkptFile (std::string const& fname,
  * the face: the face is then closed on both sides, and the boundary belongs to the cell on
  * each geometry's own side of it. The coarse levels are coarsened from the finest one.
  *
- * The complement is put on the stack below the geometry, which stays IndexSpace::top(), so
- * that code using the top IndexSpace keeps using the geometry. Use the returned pointer to
- * reach the complement, for example with makeEBFabFactory(const EB2::IndexSpace*, ...).
+ * The complement is put on the stack below its top, which does not change, so that code
+ * using IndexSpace::top() keeps using the geometry it used before. Use the returned pointer
+ * to reach the complement, for example with makeEBFabFactory(const EB2::IndexSpace*, ...).
  *
  * Multi-valued cells, shifted geometries and face-centered EB data are not supported, and
  * the geometry must have cut cells. Cells that the geometry fills almost completely give
  * very small cells in the complement.
  *
- * \param geom   Finest-level Geometry. The current geometry must have a level on it.
+ * The complement can have fewer coarse levels than the geometry, if coarsening it fails
+ * sooner; size multigrid hierarchies for it with maxCoarseningLevel(complement, geom).
+ *
+ * \param index_space IndexSpace of the geometry, e.g. IndexSpace::top() after Build().
+ * \param geom   Finest-level Geometry of the geometry.
  * \param required_coarsening_level Number of coarse levels required by the application.
  * \param max_coarsening_level      Upper bound on the number of coarse levels built.
- * \param ngrow  Number of EB grow cells on the coarse levels (default 4), as for Build().
+ * \param ngrow  Number of EB grow cells the coarse levels are extended by at the non-periodic
+ *               domain faces, if the geometry extends them there (default 4), as for Build().
  * \return The IndexSpace of the complement.
  */
-IndexSpace const* BuildComplement (const Geometry& geom,
+IndexSpace const* BuildComplement (IndexSpace const& index_space, const Geometry& geom,
                                    int required_coarsening_level,
                                    int max_coarsening_level,
                                    int ngrow = 4);

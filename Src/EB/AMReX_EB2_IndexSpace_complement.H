@@ -30,7 +30,8 @@ public:
      * \param geom        Finest-level Geometry.
      * \param required_coarsening_level Number of coarse levels required by the application.
      * \param max_coarsening_level      Upper bound on the number of coarse levels built.
-     * \param ngrow       Number of EB grow cells on the coarse levels.
+     * \param ngrow       Number of EB grow cells the coarse levels are extended by at the domain
+     *                    faces, if the geometry extends its coarse levels there (as for Build()).
      */
     IndexSpaceComplement (IndexSpace const& index_space, const Geometry& geom,
                           int required_coarsening_level, int max_coarsening_level, int ngrow);
@@ -60,7 +61,6 @@ private:
     Vector<ComplementLevel> m_level;
     Vector<Geometry> m_geom;
     Vector<Box> m_domain;
-    Vector<int> m_ngrow;
 };
 
 }

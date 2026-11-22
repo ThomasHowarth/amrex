@@ -23,11 +23,12 @@ ComplementLevel::ComplementLevel (IndexSpace const* is, int ilev, int max_grid_s
 
 namespace {
 
-// A cut cell that the level fills completely. Its boundary lies on its faces.
+// A cut cell that the level fills completely, up to the smallest volume fraction EB2 keeps
+// (eb2.small_volfrac). Its boundary lies on its faces, possibly up to rounding errors.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-bool is_full_cut (EBCellFlag flag, Real vfrac) noexcept
+bool is_full_cut (EBCellFlag flag, Real vfrac, Real small_volfrac) noexcept
 {
-    return flag.isSingleValued() && vfrac >= 1.0_rt;
+    return flag.isSingleValued() && vfrac >= 1.0_rt - small_volfrac;
 }
 
 }
@@ -41,11 +42,26 @@ ComplementLevel::define_complement (Level const& f)
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(f.m_geom.Domain() == m_geom.Domain(),
         "EB2::ComplementLevel: the level was built on a different domain");
 
-    // Without cut cells, the level is either all regular, and its complement completely
-    // covered, or it was never built because it is completely covered itself.
+    // A level without cut cells is all regular (with or without EB info), so its complement
+    // is completely covered. A completely covered geometry is never built.
     if (f.isAllRegular() || !f.hasEBInfo()) {
         amrex::Abort("EB2::ComplementLevel: the geometry has no cut cells, so its complement is "
                      "completely covered");
+    }
+
+    // The coarse levels EB2 builds have no ghost cells in their level set, which the edges
+    // below need.
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(f.m_levelset.nGrowVect().allGE(IntVect(1)),
+        "EB2::ComplementLevel: geom must be the finest level of the geometry");
+
+#ifdef AMREX_USE_FLOAT
+    Real small_volfrac = 1.e-5_rt;
+#else
+    Real small_volfrac = 1.e-12;
+#endif
+    {
+        ParmParse pp("eb2");
+        pp.queryAdd("small_volfrac", small_volfrac);
     }
 
     m_ngrow = f.m_ngrow;
@@ -71,12 +87,11 @@ ComplementLevel::define_complement (Level const& f)
     // cells the level built, which are not all reachable by FillBoundary, carry over.
     MFInfo mf_info;
     mf_info.SetTag("EB2::Level");
-    auto define_like = [&] (MultiFab& mf, MultiFab const& src)
+    auto define_like = [&] (auto& mf, auto const& src)
     {
         mf.define(src.boxArray(), src.DistributionMap(), src.nComp(), src.nGrowVect(), mf_info);
     };
-    m_cellflag.define(f.m_cellflag.boxArray(), f.m_cellflag.DistributionMap(), 1,
-                      f.m_cellflag.nGrowVect(), mf_info);
+    define_like(m_cellflag, f.m_cellflag);
     define_like(m_volfrac, f.m_volfrac);
     define_like(m_centroid, f.m_centroid);
     define_like(m_bndryarea, f.m_bndryarea);
@@ -91,7 +106,8 @@ ComplementLevel::define_complement (Level const& f)
 
     // The level's data is defined on its boxes grown by one cell (face, edge), its cell flags
     // and level set on all its ghost cells. The complement is computed where the data is
-    // defined, and the rest is copied, so that it stays as undefined as it was.
+    // defined. Elsewhere, regular and covered cells are flipped and the rest is copied, as
+    // the level never defined it; FillBoundary below overwrites it wherever it can.
     IntVect const ngdef(1);
 
     // Multi-valued cells have no complement here.
@@ -108,10 +124,6 @@ ComplementLevel::define_complement (Level const& f)
         }
     }
 
-    // The level set is negative in the region the geometry keeps and nonnegative where it
-    // is covered, so a node with level set 0 belongs to the covered region. In the
-    // complement it is in the region kept.
-    constexpr Real tiny = std::numeric_limits<Real>::min();
     constexpr Real eps = std::numeric_limits<Real>::epsilon();
 
     // Physical face areas
@@ -122,10 +134,12 @@ ComplementLevel::define_complement (Level const& f)
                                            *dx[(idim+2)%AMREX_SPACEDIM]);
     }
 
-    Long nopposite = 0;
+    // Cells with boundary on opposite faces, counted on the device and read once at the end
+    Gpu::Buffer<Long> nopp_d({Long(0)});
+    Long* nopp = nopp_d.data();
 
 #ifdef AMREX_USE_OMP
-#pragma omp parallel if (Gpu::notInLaunchRegion()) reduction(+:nopposite)
+#pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
     for (MFIter mfi(m_volfrac); mfi.isValid(); ++mfi)
     {
@@ -158,7 +172,7 @@ ComplementLevel::define_complement (Level const& f)
                     }
                     ba(i,j,k) = fba(i,j,k);
                     flg.setConnected();
-                } else if (flg.isSingleValued() && !is_full_cut(flg, fvol(i,j,k))) {
+                } else if (flg.isSingleValued() && !is_full_cut(flg, fvol(i,j,k), small_volfrac)) {
                     Real const v = fvol(i,j,k);
                     Real const vc = 1.0_rt - v;
                     vol(i,j,k) = vc;
@@ -219,8 +233,8 @@ ComplementLevel::define_complement (Level const& f)
                 }
                 IntVect const lo = iv-e;
                 bool const closed =
-                    (dbx.contains(lo) && is_full_cut(fflag(lo), fvol(lo))) ||
-                    (dbx.contains(iv) && is_full_cut(fflag(iv), fvol(iv)));
+                    (dbx.contains(lo) && is_full_cut(fflag(lo), fvol(lo), small_volfrac)) ||
+                    (dbx.contains(iv) && is_full_cut(fflag(iv), fvol(iv), small_volfrac));
                 Real const a = fap(iv);
                 Real const ac = closed ? 0.0_rt : 1.0_rt - a;
                 ap(iv) = ac;
@@ -243,18 +257,18 @@ ComplementLevel::define_complement (Level const& f)
                 ffca[idim] = f.m_facecent[idim].const_array(mfi);
                 apa[idim] = m_areafrac[idim].const_array(mfi);
             }
-            Gpu::Buffer<Long> nopp_d({Long(0)});
-            Long* nopp = nopp_d.data();
             ParallelFor(vbx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
             {
                 IntVect const iv(AMREX_D_DECL(i,j,k));
                 if (cflag(iv).isCovered()) { return; }
 
-                // Area, area vector, and first moments of the pieces
+                // Area A and area vector V of the pieces, the first moments M_d of x_d n_d
+                // dA, from which the centroid follows, and the area moments Marea_d of x_d
+                // dA, used instead in a direction the boundary has no area in
                 Real A = 0.0_rt;
-                Real V[AMREX_SPACEDIM], M[AMREX_SPACEDIM], Mc[AMREX_SPACEDIM];
+                Real V[AMREX_SPACEDIM], M[AMREX_SPACEDIM], Marea[AMREX_SPACEDIM];
                 for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-                    V[d] = 0.0_rt; M[d] = 0.0_rt; Mc[d] = 0.0_rt;
+                    V[d] = 0.0_rt; M[d] = 0.0_rt; Marea[d] = 0.0_rt;
                 }
                 bool found = false;
                 for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -262,7 +276,7 @@ ComplementLevel::define_complement (Level const& f)
                     for (int side = 0; side < 2; ++side) {
                         IntVect const nb = side ? iv+e : iv-e;
                         IntVect const face = side ? iv+e : iv;
-                        if (!is_full_cut(fflag(nb), fvol(nb))) { continue; }
+                        if (!is_full_cut(fflag(nb), fvol(nb), small_volfrac)) { continue; }
                         Real const w = 1.0_rt - fapa[d](face) - apa[d](face);
                         if (w <= 0.0_rt) { continue; }
                         found = true;
@@ -271,14 +285,14 @@ ComplementLevel::define_complement (Level const& f)
                         A += area;
                         V[d] += sgn * area;
                         M[d] += 0.5_rt * area;
-                        Mc[d] += 0.5_rt * sgn * area;
+                        Marea[d] += 0.5_rt * sgn * area;
                         // Centroid of the closed part of the face in its tangential directions
                         Real const a = fapa[d](face);
                         int m = 0;
                         for (int t = 0; t < AMREX_SPACEDIM; ++t) {
                             if (t == d) { continue; }
                             Real const c = (a > 0.0_rt) ? -a*ffca[d](face,m)/w : 0.0_rt;
-                            Mc[t] += area * c;
+                            Marea[t] += area * c;
                             ++m;
                         }
                     }
@@ -295,7 +309,7 @@ ComplementLevel::define_complement (Level const& f)
                     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
                         V[d] += aeb * bn(iv,d);
                         M[d] += aeb * bn(iv,d) * bc(iv,d);
-                        Mc[d] += aeb * bc(iv,d);
+                        Marea[d] += aeb * bc(iv,d);
                     }
                 }
 
@@ -312,7 +326,7 @@ ComplementLevel::define_complement (Level const& f)
                     Real const n = V[d] / vn;
                     bn(iv,d) = n;
                     s += (n*fa[d]) * (n*fa[d]);
-                    Real const b = (std::abs(V[d]) > eps * vn) ? M[d] / V[d] : Mc[d] / A;
+                    Real const b = (std::abs(V[d]) > eps * vn) ? M[d] / V[d] : Marea[d] / A;
                     bc(iv,d) = amrex::Clamp(b, -0.5_rt, 0.5_rt);
                 }
                 ba(iv) = vn / std::sqrt(s);
@@ -323,7 +337,6 @@ ComplementLevel::define_complement (Level const& f)
                     cflag(iv) = flg;
                 }
             });
-            nopposite += *(nopp_d.copyToHost());
         }
 
         // Edges: 1 for a regular edge, -1 for a covered one, otherwise the centroid of the
@@ -369,47 +382,39 @@ ComplementLevel::define_complement (Level const& f)
             auto const& ls = m_levelset.array(mfi);
             ParallelFor(m_levelset[mfi].box(), [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
             {
+                // The level set is negative in the region the geometry keeps and
+                // nonnegative where it is covered, so a node with level set 0 belongs to the
+                // covered region. In the complement it is in the region kept.
+                constexpr Real tiny = std::numeric_limits<Real>::min();
                 Real const l = fls(i,j,k);
                 ls(i,j,k) = (l == 0.0_rt) ? -tiny : -l;
             });
         }
     }
 
+    Long nopposite = *(nopp_d.copyToHost());
     ParallelAllReduce::Sum(nopposite, ParallelContext::CommunicatorSub());
     if (nopposite > 0) {
         amrex::Abort("EB2::ComplementLevel: the complement has cells with boundary on opposite "
                      "faces, such as a body one cell thick");
     }
 
-    // The boundary that moved across faces was computed on the valid cells only.
+    // The boundary that moved across faces was computed on the valid cells only, and the
+    // level left the outer ghost cells undefined.
     auto const& period = m_geom.periodicity();
-    m_cellflag.FillBoundary(period);
-    m_bndryarea.FillBoundary(period);
-    m_bndrycent.FillBoundary(period);
-    m_bndrynorm.FillBoundary(period);
-
-    // Connections between cells, from the area fractions, as Level::buildCellFlag does.
-#ifdef AMREX_USE_OMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
-#endif
-    for (MFIter mfi(m_cellflag); mfi.isValid(); ++mfi)
     {
-        auto const& cflag = m_cellflag.array(mfi);
-        AMREX_D_TERM(auto const& apx = m_areafrac[0].const_array(mfi);,
-                     auto const& apy = m_areafrac[1].const_array(mfi);,
-                     auto const& apz = m_areafrac[2].const_array(mfi););
-        ParallelFor(mfi.validbox(), [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
-        {
-            if (!cflag(i,j,k).isCovered()) {
-#if (AMREX_SPACEDIM == 3)
-                build_cellflag_from_ap(i, j, k, cflag, apx, apy, apz);
-#else
-                amrex::ignore_unused(k);
-                build_cellflag_from_ap(i, j, cflag, apx, apy);
-#endif
-            }
-        });
+        Vector<MultiFab*> mfs{&m_volfrac, &m_centroid, &m_bndryarea, &m_bndrycent,
+                              &m_bndrynorm};
+        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+            mfs.push_back(&m_areafrac[idim]);
+            mfs.push_back(&m_facecent[idim]);
+            mfs.push_back(&m_edgecent[idim]);
+        }
+        amrex::FillBoundary(mfs, period);
     }
+
+    // Connections between cells, from the area fractions
+    buildCellFlag();
     m_cellflag.FillBoundary(period);
 
     m_ok = true;

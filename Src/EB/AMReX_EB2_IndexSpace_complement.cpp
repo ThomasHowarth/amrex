@@ -18,18 +18,12 @@ IndexSpaceComplement::IndexSpaceComplement (IndexSpace const& index_space, const
     m_level.reserve(max_coarsening_level+1);
     m_level.emplace_back(this, index_space.getLevel(geom), geom);
 
-    // The coarse levels get the grow cells they would get from EB2::Build.
-    bool const extend_domain_face = m_level.back().extrudeCoarseLevels();
-    int ngrow_finest = std::max(ngrow,0);
-    if (!extend_domain_face) {
-        for (int i = 1; i <= required_coarsening_level; ++i) {
-            ngrow_finest *= 2;
-        }
-    }
+    // The grow cells of the coarse levels follow from the finest one. ngrow is only used to
+    // extend them at the domain faces when the geometry extends its coarse levels there.
+    int const ng_extrude = m_level.back().extrudeCoarseLevels() ? std::max(ngrow,0) : 0;
 
     m_geom.push_back(geom);
     m_domain.push_back(geom.Domain());
-    m_ngrow.push_back(ngrow_finest);
 
     for (int ilev = 1; ilev <= max_coarsening_level; ++ilev)
     {
@@ -43,14 +37,9 @@ IndexSpaceComplement::IndexSpaceComplement (IndexSpace const& index_space, const
             }
         }
 
-        int ng = 0;
-        if (ilev <= required_coarsening_level) {
-            ng = extend_domain_face ? m_ngrow.back() : m_ngrow.back()/2;
-        }
-
         Box cdomain = amrex::coarsen(m_geom.back().Domain(),2);
         Geometry cgeom = amrex::coarsen(m_geom.back(),2);
-        m_level.emplace_back(this, ilev, EB2::max_grid_size, ng, cgeom, m_level[ilev-1]);
+        m_level.emplace_back(this, ilev, EB2::max_grid_size, ng_extrude, cgeom, m_level[ilev-1]);
         if (!m_level.back().isOK()) {
             m_level.pop_back();
             if (ilev <= required_coarsening_level) {
@@ -62,7 +51,15 @@ IndexSpaceComplement::IndexSpaceComplement (IndexSpace const& index_space, const
         }
         m_geom.push_back(cgeom);
         m_domain.push_back(cdomain);
-        m_ngrow.push_back(ng);
+    }
+
+    // Code that sizes its hierarchy from the geometry, e.g. with EB2::maxCoarseningLevel(geom),
+    // would ask the complement for levels it does not have.
+    if (index_space.coarsestDomain().numPts() < coarsestDomain().numPts()
+        && m_level.size() < static_cast<std::size_t>(max_coarsening_level+1))
+    {
+        amrex::Warning("IndexSpaceComplement: the complement has fewer coarse levels than the "
+                       "geometry; use EB2::maxCoarseningLevel with the complement's IndexSpace");
     }
 }
 

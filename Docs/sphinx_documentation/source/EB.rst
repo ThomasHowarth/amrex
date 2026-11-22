@@ -269,14 +269,16 @@ geometry is the fluid. After building the geometry, call
 
 ::
 
-    EB2::IndexSpace const* EB2::BuildComplement (const Geometry& geom,
+    EB2::IndexSpace const* EB2::BuildComplement (EB2::IndexSpace const& index_space,
+                                                 const Geometry& geom,
                                                  int required_coarsening_level,
                                                  int max_coarsening_level,
                                                  int ngrow = 4);
 
-It builds the complement of the geometry of :cpp:`EB2::IndexSpace::top()` on
-the same :cpp:`Geometry` and returns its :cpp:`EB2::IndexSpace`. Use the same
-coarsening parameters and ``ngrow`` as for the geometry. The complement is built
+with the geometry's :cpp:`EB2::IndexSpace`, e.g. :cpp:`EB2::IndexSpace::top()`
+right after :cpp:`EB2::Build`. It builds the complement of that geometry on the
+same finest-level :cpp:`Geometry` and returns its :cpp:`EB2::IndexSpace`. Use
+the same coarsening parameters and ``ngrow`` as for the geometry. The complement is built
 from the geometry's data rather than from an implicit function, so the two are
 exact complements of each other. Cells that are regular in one are covered in
 the other. In a cut cell, the volume fractions add up to one, the boundary area
@@ -285,9 +287,12 @@ the area fractions add up to one. An exception is a boundary that lies exactly
 on cell faces, as for a box aligned with the grid. There, the face is closed on
 both sides, and the boundary belongs to the cell on each geometry's side of the
 face. The coarse levels of the complement are coarsened from its finest level.
+If coarsening the complement fails sooner than coarsening the geometry, it has
+fewer levels, so size multigrid hierarchies for it with
+:cpp:`EB2::maxCoarseningLevel(complement, geom)`.
 
-The geometry stays on top of the stack, so code that uses
-:cpp:`EB2::IndexSpace::top()` keeps using it. To use the complement, pass the
+The top of the stack does not change, so code that uses
+:cpp:`EB2::IndexSpace::top()` keeps using the geometry. To use the complement, pass the
 returned pointer, for example to :cpp:`makeEBFabFactory` (see below).
 
 A cell that the geometry almost fills gives a very small cell in the complement,

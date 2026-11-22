@@ -103,14 +103,32 @@ struct GeomData
     }
 };
 
-// Per-cell flags, bounds, area and volume errors (valid cells) in err
-void cell_checks (GeomData const& g, Geometry const& geom, MultiFab& err)
+// Physical face areas, and the largest of them
+std::pair<GpuArray<Real,AMREX_SPACEDIM>,Real> face_areas (Geometry const& geom)
 {
     auto const dx = geom.CellSizeArray();
     Real const dv = AMREX_D_TERM(dx[0], *dx[1], *dx[2]);
     GpuArray<Real,AMREX_SPACEDIM> fa;
     for (int d = 0; d < AMREX_SPACEDIM; ++d) { fa[d] = dv / dx[d]; }
-    Real const amax = *std::max_element(fa.begin(), fa.end());
+    return {fa, *std::max_element(fa.begin(), fa.end())};
+}
+
+// Physical boundary area from the stored (normalized) one
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+Real eb_area (Array4<Real const> const& ba, Array4<Real const> const& bn, IntVect const& iv,
+              GpuArray<Real,AMREX_SPACEDIM> const& fa) noexcept
+{
+    Real s = 0.0_rt;
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) {
+        s += (bn(iv,d) * fa[d]) * (bn(iv,d) * fa[d]);
+    }
+    return ba(iv) * std::sqrt(s);
+}
+
+// Per-cell flags, bounds, area and volume errors (valid cells) in err
+void cell_checks (GeomData const& g, Geometry const& geom, MultiFab& err)
+{
+    auto const [fa, amax] = face_areas(geom);
 
     auto const& flag = g.flag.const_arrays();
     auto const& vf = g.vfrac.const_arrays();
@@ -171,12 +189,7 @@ void cell_checks (GeomData const& g, Geometry const& geom, MultiFab& err)
         }
         e[b](i,j,k,bounds) = amrex::max(berr, std::abs(std::sqrt(nn) - 1.0_rt));
 
-        // Physical boundary area from the stored (normalized) one
-        Real s = 0.0_rt;
-        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-            s += (bn[b](i,j,k,d) * fa[d]) * (bn[b](i,j,k,d) * fa[d]);
-        }
-        Real const aeb = ba[b](i,j,k) * std::sqrt(s);
+        Real const aeb = eb_area(ba[b], bn[b], iv, fa);
 
         Real aerr = 0.0_rt, verr = 0.0_rt;
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -231,11 +244,15 @@ Real decomp_diff (MultiFab const& a, MultiFab const& b)
 Real complement_diff (GeomData const& g, GeomData const& c, Geometry const& geom,
                       bool eb_exact, bool finest, Long& on_face_cells, IntVect& where)
 {
-    auto const dx = geom.CellSizeArray();
-    Real const dv = AMREX_D_TERM(dx[0], *dx[1], *dx[2]);
-    GpuArray<Real,AMREX_SPACEDIM> fa;
-    for (int d = 0; d < AMREX_SPACEDIM; ++d) { fa[d] = dv / dx[d]; }
-    Real const amax = *std::max_element(fa.begin(), fa.end());
+    auto const [fa, amax] = face_areas(geom);
+
+    // Cells this close to full are filled completely in BuildComplement.
+#ifdef AMREX_USE_FLOAT
+    Real small_volfrac = 1.e-5_rt;
+#else
+    Real small_volfrac = 1.e-12;
+#endif
+    ParmParse("eb2").query("small_volfrac", small_volfrac);
 
     MultiFab err(g.vfrac.boxArray(), g.vfrac.DistributionMap(), 2, 0);
     auto const& gf = g.flag.const_arrays();
@@ -264,37 +281,28 @@ Real complement_diff (GeomData const& g, GeomData const& c, Geometry const& geom
         Real const v = gv[b](iv);
         Real const vc = cv[b](iv);
         bool const flags_ok = (f == 0 && fc == 2) || (f == 2 && fc == 0) || (f == 1 && fc == 1)
-            || (f == 1 && v >= 1.0_rt && fc == 2) || (f == 2 && fc == 1 && vc >= 1.0_rt);
+            || (f == 1 && v >= 1.0_rt - small_volfrac && fc == 2)
+            || (f == 2 && fc == 1 && vc >= 1.0_rt - small_volfrac);
         Real r = flags_ok ? 0.0_rt : 1.0_rt;
         r = amrex::max(r, std::abs(v + vc - 1.0_rt));
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
             r = amrex::max(r, std::abs(v*gc[b](iv,d) + vc*cc[b](iv,d)));
         }
 
-        Real sg = 0.0_rt, sc = 0.0_rt;
-        for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-            sg += (gbn[b](iv,d) * fa[d]) * (gbn[b](iv,d) * fa[d]);
-            sc += (cbn[b](iv,d) * fa[d]) * (cbn[b](iv,d) * fa[d]);
-        }
-        Real const aeb = gba[b](iv) * std::sqrt(sg);
-        Real const aebc = cba[b](iv) * std::sqrt(sc);
+        Real const aeb = eb_area(gba[b], gbn[b], iv, fa);
+        Real const aebc = eb_area(cba[b], cbn[b], iv, fa);
         bool on_face = false;
         for (int d = 0; d < AMREX_SPACEDIM; ++d) {
             IntVect const hi = iv + IntVect::TheDimensionVector(d);
             Real const wlo = 1.0_rt - gap[d][b](iv) - cap[d][b](iv);
             Real const whi = 1.0_rt - gap[d][b](hi) - cap[d][b](hi);
             on_face = on_face || wlo > 0.0_rt || whi > 0.0_rt;
-        }
-        e[b](iv,1) = on_face ? 1.0_rt : 0.0_rt;
-        if (eb_exact) {
-            for (int d = 0; d < AMREX_SPACEDIM; ++d) {
-                IntVect const hi = iv + IntVect::TheDimensionVector(d);
-                Real const wlo = 1.0_rt - gap[d][b](iv) - cap[d][b](iv);
-                Real const whi = 1.0_rt - gap[d][b](hi) - cap[d][b](hi);
+            if (eb_exact) {
                 Real const rv = aeb * gbn[b](iv,d) + aebc * cbn[b](iv,d) - (whi - wlo) * fa[d];
                 r = amrex::max(r, std::abs(rv) / amax);
             }
         }
+        e[b](iv,1) = on_face ? 1.0_rt : 0.0_rt;
         if (eb_exact && f == 1 && fc == 1 && !on_face) {
             r = amrex::max(r, std::abs(gba[b](iv) - cba[b](iv)));
             for (int d = 0; d < AMREX_SPACEDIM; ++d) {
@@ -500,7 +508,8 @@ int main (int argc, char* argv[])
         bool failed = check_index_space(index_space, nullptr, geom, p);
 
         if (complement) {
-            EB2::IndexSpace const* comp = EB2::BuildComplement(geom, 0, p.max_coarsening_level);
+            EB2::IndexSpace const* comp =
+                EB2::BuildComplement(*index_space, geom, 0, p.max_coarsening_level);
             if (&EB2::IndexSpace::top() != index_space) {
                 amrex::Print() << "FAILED: the geometry is no longer the top IndexSpace\n";
                 failed = true;

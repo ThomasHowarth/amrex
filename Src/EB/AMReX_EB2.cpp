@@ -289,18 +289,19 @@ BuildFromChkptFile (std::string const& fname,
 }
 
 IndexSpace const*
-BuildComplement (const Geometry& geom, int required_coarsening_level,
+BuildComplement (IndexSpace const& index_space, const Geometry& geom,
+                 int required_coarsening_level,
                  int max_coarsening_level, int ngrow)
 {
     BL_PROFILE("EB2::BuildComplement()");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!IndexSpace::empty(),
-        "EB2::BuildComplement: must call EB2::Build first to create the geometry");
-    IndexSpace* index_space = &IndexSpace::top();
     auto complement = std::make_unique<IndexSpaceComplement>
-        (*index_space, geom, required_coarsening_level, max_coarsening_level, ngrow);
+        (index_space, geom, required_coarsening_level, max_coarsening_level, ngrow);
     IndexSpace const* r = complement.get();
+    IndexSpace* top = IndexSpace::empty() ? nullptr : &IndexSpace::top();
     IndexSpace::push(std::move(complement));
-    IndexSpace::push(index_space); // already on the stack: moves it back to the top
+    if (top) {
+        IndexSpace::push(top); // already on the stack: moves it back to the top
+    }
     return r;
 }
 
