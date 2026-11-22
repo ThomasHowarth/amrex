@@ -122,6 +122,32 @@ public:
                          Vector<MultiFab const*> const& a_beta);
     //! EB operator: homogeneous Dirichlet boundary condition on the EB
     void setEBHomogDirichlet (Vector<MultiFab const*> const& a_beta);
+
+    /**
+     * \brief Add the upwind drift term -c_scalar * div(c phi) to the operator
+     * of the following setups, which becomes
+     * a_scalar a phi - b_scalar div(b grad phi) - c_scalar div(c phi) (the data
+     * are copied).
+     *
+     * The flux through a face is c times the cell value upwind of it, with the
+     * ghost-cell values of the boundary conditions at the domain boundary, as
+     * for the diffusive flux; this is transport by c, stable when c_scalar has
+     * the sign opposite to b_scalar's. The operator is not symmetric, so it
+     * needs the IJ mode with a nonsymmetric Krylov method:
+     * `<prefix>.hypre_solver = GMRES` (with BoomerAMG as preconditioner), or
+     * `<prefix>.backend = algmg` with `<prefix>.algmg.krylov = gmres` (or
+     * `bicgstab`).
+     *
+     * Only for one AMR level without EB for now.
+     *
+     * \param a_cscalar Scalar multiplying the drift term.
+     * \param a_ccoefs  Per-level face velocities, one component per direction
+     *                  (null for no drift in that direction).
+     */
+    void setDriftCoeffs (Real a_cscalar,
+                         Vector<Array<MultiFab const*,AMREX_SPACEDIM>> const& a_ccoefs);
+    //! Remove the drift term from the following setups
+    void clearDriftCoeffs () { m_drift_scalar = Real(0.0); m_drift_coefs.clear(); }
     /**
      * \brief EB operator: the b coefficients of the following setups are at
      * the face centroids, as with MLEBABecLap::setBCoeffs and
@@ -385,6 +411,9 @@ private:
     Vector<MultiFab> m_crse_scale;
     Vector<MultiFab> m_eb_bcrhs;
     Vector<MultiFab> m_eb_beta;
+    //! The drift term of setDriftCoeffs
+    Real m_drift_scalar = Real(0.0);
+    Vector<Array<MultiFab,AMREX_SPACEDIM>> m_drift_coefs;
     Vector<MultiFab> m_eb_phi;
     //! With setup reuse, the triplets of later setups are summed directly
     //! into a matrix's value array (composite::EntryGather)

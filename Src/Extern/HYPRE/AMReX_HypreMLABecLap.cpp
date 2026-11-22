@@ -853,6 +853,16 @@ void HypreMLABecLap::setup (Real a_ascalar, Real a_bscalar,
                 }
             }
 
+            Real const sc = m_drift_scalar;
+            GpuArray<Array4<Real const>, AMREX_SPACEDIM> cfabs;
+            if (sc != Real(0.0)) {
+                for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+                    if (m_drift_coefs[ilev][idim].isDefined()) {
+                        cfabs[idim] = m_drift_coefs[ilev][idim].const_array(mfi);
+                    }
+                }
+            }
+
             GpuArray<int,AMREX_SPACEDIM*2> bctype;
             GpuArray<Real,AMREX_SPACEDIM*2> bcl;
             GpuArray<Array4<int const>, AMREX_SPACEDIM*2> bcmsk;
@@ -884,7 +894,7 @@ void HypreMLABecLap::setup (Real a_ascalar, Real a_bscalar,
             [=] AMREX_GPU_HOST_DEVICE (GpuArray<Real,stencil_size>& sten,
                                        int i, int j, int k)
             {
-                hypmlabeclap_mat(sten, i, j, k, boxlo, boxhi, sa, afab, sb, dx, bfabs,
+                hypmlabeclap_mat(sten, i, j, k, boxlo, boxhi, sa, afab, sb, dx, bfabs, sc, cfabs,
                                  bctype, bcl, bcmsk, bcval, bcrhs, ilev, fixed_pt);
             });
 
@@ -1798,6 +1808,32 @@ void HypreMLABecLap::setEBHomogDirichlet (Vector<MultiFab const*> const& a_beta)
 {
     copyEBData(a_beta, m_eb_beta);
     m_eb_phi.clear();
+}
+
+void HypreMLABecLap::setDriftCoeffs (Real a_cscalar,
+                                     Vector<Array<MultiFab const*,AMREX_SPACEDIM>> const& a_ccoefs)
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_nlevels == 1 && !m_eb,
+        "HypreMLABecLap::setDriftCoeffs: only one AMR level without EB is supported");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_use_ij,
+        "HypreMLABecLap::setDriftCoeffs: needs the IJ mode with a nonsymmetric Krylov "
+        "solver (" + m_parmparse_prefix + ".hypre_solver = GMRES, or backend = algmg)");
+    m_drift_scalar = a_cscalar;
+    m_drift_coefs.clear();
+    m_drift_coefs.resize(m_nlevels);
+    for (int ilev = 0; ilev < m_nlevels && ilev < a_ccoefs.size(); ++ilev) {
+        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+            auto const* src = a_ccoefs[ilev][idim];
+            if (!src) { continue; }
+            BoxArray const ba = amrex::convert(m_grids[ilev], IntVect::TheDimensionVector(idim));
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(src->boxArray() == ba &&
+                                             src->DistributionMap() == m_dmap[ilev],
+                "HypreMLABecLap::setDriftCoeffs: the data must be on the faces of the constructor's grids");
+            m_drift_coefs[ilev][idim].define(ba, m_dmap[ilev], 1, 0);
+            MultiFab::Copy(m_drift_coefs[ilev][idim], *src, 0, 0, 1, 0);
+        }
+    }
+    Gpu::streamSynchronize(); // the caller may free the sources
 }
 
 void HypreMLABecLap::copyEBData (Vector<MultiFab const*> const& src, Vector<MultiFab>& dst) const

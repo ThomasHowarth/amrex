@@ -13,12 +13,47 @@ namespace amrex {
 
 #if (AMREX_SPACEDIM > 1)
 
+/**
+ * \brief Add the upwind drift term -sc * div(c phi) of the face velocities c
+ * to the stencil of cell (i,j,k).
+ *
+ * The flux through a face is c times the cell value upwind of it; with c == 0
+ * there is no flux. Across the boundary of the level, the upwind value is the
+ * ghost cell's, as for the diffusive flux.
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void hypmlabeclap_drift (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, int k,
+                         Real sc, GpuArray<Real,AMREX_SPACEDIM> const& dx,
+                         GpuArray<Array4<Real const>, AMREX_SPACEDIM> const& c)
+{
+    IntVect const iv(AMREX_D_DECL(i,j,k));
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        if (!c[idim]) { continue; }
+        IntVect const ivp = iv + IntVect::TheDimensionVector(idim);
+        Real const um = c[idim](iv);  // low face
+        Real const up = c[idim](ivp); // high face
+        Real const f = sc / dx[idim];
+        // The low face adds +f*um*phi_upwind, the high face -f*up*phi_upwind
+        if (um > Real(0.0)) {
+            sten[2*idim+1] += f * um;
+        } else {
+            sten[0] += f * um;
+        }
+        if (up > Real(0.0)) {
+            sten[0] -= f * up;
+        } else {
+            sten[2*idim+2] -= f * up;
+        }
+    }
+}
+
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, int k,
                        Dim3 const& boxlo, Dim3 const& boxhi,
                        Real sa, Array4<Real const> const& a,
                        Real sb, GpuArray<Real,AMREX_SPACEDIM> const& dx,
                        GpuArray<Array4<Real const>, AMREX_SPACEDIM> const& b,
+                       Real sc, GpuArray<Array4<Real const>, AMREX_SPACEDIM> const& c,
                        GpuArray<int,AMREX_SPACEDIM*2> const& bctype,
                        GpuArray<Real,AMREX_SPACEDIM*2> const& bcl,
                        GpuArray<Array4<int const>, AMREX_SPACEDIM*2> const& bcmsk,
@@ -48,6 +83,13 @@ void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, in
     sten[0] = -(sten[1] + sten[2] + sten[3] + sten[4] + sten[5] + sten[6]) + sa*ac;
 #endif
 
+    if (sc != Real(0.0)) { hypmlabeclap_drift(sten, i, j, k, sc, dx, c); }
+
+    // The coefficients of the ghost cells, which the boundary conditions below
+    // replace with interior cells and boundary values
+    GpuArray<Real,2*AMREX_SPACEDIM> ghost;
+    for (int n = 0; n < 2*AMREX_SPACEDIM; ++n) { ghost[n] = -sten[n+1]; }
+
     // xlo
     if (i == boxlo.x) {
         int const cdir = Orientation(Direction::x, Orientation::low);
@@ -63,7 +105,7 @@ void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, in
                 cc[1] = Real(1.0);
                 cc[2] = Real(0.0);
             }
-            Real fac = (sb / (dx[0]*dx[0])) * bxm;
+            Real fac = ghost[0];
             if (bct == AMREX_LO_DIRICHLET && (level == 0 || bcmk == 2)) {
                 // bcmk == 2 means outside the domain.
                 // We need to modify RHS at external Dirichlet boundaries.
@@ -92,7 +134,7 @@ void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, in
                 cc[1] = Real(1.0);
                 cc[2] = Real(0.0);
             }
-            Real fac = (sb / (dx[0]*dx[0])) * bxp;
+            Real fac = ghost[1];
             if (bct == AMREX_LO_DIRICHLET && (level == 0 || bcmk == 2)) {
                 // bcmk == 2 means outside the domain.
                 // We need to modify RHS at external Dirichlet boundaries.
@@ -121,7 +163,7 @@ void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, in
                 cc[1] = Real(1.0);
                 cc[2] = Real(0.0);
             }
-            Real fac = (sb / (dx[1]*dx[1])) * bym;
+            Real fac = ghost[2];
             if (bct == AMREX_LO_DIRICHLET && (level == 0 || bcmk == 2)) {
                 // bcmk == 2 means outside the domain.
                 // We need to modify RHS at external Dirichlet boundaries.
@@ -150,7 +192,7 @@ void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, in
                 cc[1] = Real(1.0);
                 cc[2] = Real(0.0);
             }
-            Real fac = (sb / (dx[1]*dx[1])) * byp;
+            Real fac = ghost[3];
             if (bct == AMREX_LO_DIRICHLET && (level == 0 || bcmk == 2)) {
                 // bcmk == 2 means outside the domain.
                 // We need to modify RHS at external Dirichlet boundaries.
@@ -181,7 +223,7 @@ void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, in
                 cc[1] = Real(1.0);
                 cc[2] = Real(0.0);
             }
-            Real fac = (sb / (dx[2]*dx[2])) * bzm;
+            Real fac = ghost[4];
             if (bct == AMREX_LO_DIRICHLET && (level == 0 || bcmk == 2)) {
                 // bcmk == 2 means outside the domain.
                 // We need to modify RHS at external Dirichlet boundaries.
@@ -210,7 +252,7 @@ void hypmlabeclap_mat (GpuArray<Real,2*AMREX_SPACEDIM+1>& sten, int i, int j, in
                 cc[1] = Real(1.0);
                 cc[2] = Real(0.0);
             }
-            Real fac = (sb / (dx[2]*dx[2])) * bzp;
+            Real fac = ghost[5];
             if (bct == AMREX_LO_DIRICHLET && (level == 0 || bcmk == 2)) {
                 // bcmk == 2 means outside the domain.
                 // We need to modify RHS at external Dirichlet boundaries.

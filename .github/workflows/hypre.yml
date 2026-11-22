@@ -145,6 +145,14 @@ jobs:
             done
         done
 
+        # Upwind drift term of HypreMLABecLap::setDriftCoeffs, and without it
+        cd ${{github.workspace}}/Tests/LinearSolvers/HypreMLABecLapDrift
+        make -j4 USE_MPI=TRUE USE_HYPRE=TRUE DIM=3 CCACHE=ccache CXXSTD=c++20
+        for i in inputs-hypre inputs-algmg; do
+            mpiexec -n 2 ./main3d.gnu.MPI.ex $i
+            mpiexec -n 2 ./main3d.gnu.MPI.ex $i cscalar=0
+        done
+
         # Composite EB solve (HypreMLABecLap) against MLMG
         cd ${{github.workspace}}/Tests/LinearSolvers/CellEB2
         make -j4 USE_MPI=TRUE USE_HYPRE=TRUE DIM=3 CCACHE=ccache CXXSTD=c++20

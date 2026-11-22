@@ -1,0 +1,12 @@
+# As inputs-hypre, with the AlgMG backend (GMRES preconditioned by AlgMG
+# V-cycles).
+n_cell = 32
+max_grid_size = 16
+cscalar = -20.0
+
+amrex.fpe_trap_invalid = 1
+amrex.fpe_trap_overflow = 1
+amrex.fpe_trap_zero = 1
+
+hypre_mlabeclap.backend = algmg
+hypre_mlabeclap.algmg.krylov = gmres
