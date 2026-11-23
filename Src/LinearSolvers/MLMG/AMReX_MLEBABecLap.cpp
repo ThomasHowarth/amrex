@@ -984,14 +984,21 @@ MLEBABecLap::setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, c
                 for (int n = 0; n < ncomp; ++n) {
                     Real ca = rma[box_no](i,j,k,n+ncomp);
                     Real cb = rma[box_no](i,j,k,n+2*ncomp);
-                    if (ca*cb < Real(0.0) || (ca == Real(0.0) && cb == Real(0.0))) { r = 1; }
+                    // Same sign and not both zero; also false for NaN
+                    bool ok = (ca >= Real(0.0) && cb >= Real(0.0) && (ca > Real(0.0) || cb > Real(0.0)))
+                           || (ca <= Real(0.0) && cb <= Real(0.0) && (ca < Real(0.0) || cb < Real(0.0)));
+                    if (!ok) { r = 1; }
                 }
             }
             return {r};
         });
-    ParallelDescriptor::ReduceIntMax(bad);
+    // The solver's communicator, which may be a sub-communicator
+    ParallelAllReduce::Max(bad, ParallelContext::CommunicatorSub());
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(bad == 0,
         "MLEBABecLap::setEBRobin: a and b must not have opposite signs or both be zero");
+
+    // So that getEBFluxes works before the next solve
+    computeEBRobinBeff(amrlev, mglev);
 }
 
 void
@@ -999,21 +1006,59 @@ MLEBABecLap::computeEBRobinCoeffs ()
 {
     if (!isEBRobin()) { return; }
     const int ncomp = getNComp();
-    m_eb_robin_pins = false;
     for (int amrlev = 0; amrlev < m_num_amr_levels; ++amrlev) {
         for (int mglev = 1; mglev < m_num_mg_levels[amrlev]; ++mglev) {
-            IntVect ratio = (amrlev > 0) ? IntVect(mg_coarsen_ratio) : mg_coarsen_ratio_vec[mglev-1];
-            amrex::EB_average_down_boundaries(*m_eb_robin[amrlev][mglev-1],
-                                              *m_eb_robin[amrlev][mglev], ratio, 0);
+            averageDownEBRobin(amrlev, mglev);
         }
         // dg depends on the level, so the coefficient is computed on each level
         // from the averaged b_EB, a and b rather than averaged itself
         for (int mglev = 0; mglev < m_num_mg_levels[amrlev]; ++mglev) {
             computeEBRobinBeff(amrlev, mglev);
         }
-        m_eb_robin_pins = m_eb_robin_pins ||
-            m_eb_b_coeffs[amrlev][0]->norminf(0, ncomp, IntVect(0)) > Real(0.0);
     }
+
+    // Whether the EB fixes each component's solution (a != 0 somewhere)
+    m_eb_robin_pins = false;
+    m_eb_robin_pins_all = true;
+    for (int n = 0; n < ncomp; ++n) {
+        bool pins = false;
+        for (int amrlev = 0; amrlev < m_num_amr_levels; ++amrlev) {
+            pins = pins || m_eb_b_coeffs[amrlev][0]->norminf(n, 1, IntVect(0)) > Real(0.0);
+        }
+        m_eb_robin_pins = m_eb_robin_pins || pins;
+        m_eb_robin_pins_all = m_eb_robin_pins_all && pins;
+    }
+}
+
+void
+MLEBABecLap::averageDownEBRobin (int amrlev, int mglev)
+{
+    const int ncomp = getNComp();
+    MultiFab const& fine = *m_eb_robin[amrlev][mglev-1];
+    IntVect ratio = (amrlev > 0) ? IntVect(mg_coarsen_ratio) : mg_coarsen_ratio_vec[mglev-1];
+
+    // a and b may differ in sign and scale from cell to cell (e.g. Dirichlet next
+    // to Neumann), so averaging them directly can give a coarse coefficient of
+    // the wrong sign.  Scale each cell's pair so that a*L + b = 1, with L the
+    // coarse cell size: both become >= 0, and the average then behaves like the
+    // average of a*dg/(a*dg+b) on the coarse level.
+    const auto cdxinv = m_geom[amrlev][mglev].InvCellSizeArray();
+    const Real L = Real(1.0) / amrex::max(AMREX_D_DECL(cdxinv[0], cdxinv[1], cdxinv[2]));
+    MultiFab tmp(fine.boxArray(), fine.DistributionMap(), 3*ncomp, 0, MFInfo(),
+                 *m_factory[amrlev][mglev-1]);
+    MultiFab::Copy(tmp, fine, 0, 0, 3*ncomp, 0);
+    auto const& tma = tmp.arrays();
+    amrex::ParallelFor(tmp, IntVect(0), ncomp,
+        [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
+        {
+            auto const& t = tma[box_no];
+            Real den = t(i,j,k,n+ncomp)*L + t(i,j,k,n+2*ncomp);
+            if (den != Real(0.0)) {
+                t(i,j,k,n+ncomp) /= den;
+                t(i,j,k,n+2*ncomp) /= den;
+            }
+        });
+    amrex::EB_average_down_boundaries(tmp, *m_eb_robin[amrlev][mglev], ratio, 0);
 }
 
 void
@@ -1234,6 +1279,13 @@ MLEBABecLap::prepareForSolve ()
     m_is_singular.resize(m_num_amr_levels, false);
     auto itlo = std::ranges::find(m_lobc[0], BCType::Dirichlet);
     auto ithi = std::ranges::find(m_hibc[0], BCType::Dirichlet);
+    // One singular flag per level serves all components, so a component that
+    // only the EB could fix must be fixed by it in all components or none
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!isEBRobin() || m_eb_robin_pins == m_eb_robin_pins_all ||
+                                     itlo != m_lobc[0].end() || ithi != m_hibc[0].end() ||
+                                     m_a_scalar != 0.0,
+        "MLEBABecLap::setEBRobin: with no Dirichlet domain boundary and no a term,"
+        " a = 0 on the whole EB is supported for all components or none");
     if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBPinning())
     {  // No Dirichlet
         for (int alev = 0; alev < m_num_amr_levels; ++alev)
@@ -1876,6 +1928,13 @@ MLEBABecLap::update ()
     m_is_singular.resize(m_num_amr_levels, false);
     auto itlo = std::ranges::find(m_lobc[0], BCType::Dirichlet);
     auto ithi = std::ranges::find(m_hibc[0], BCType::Dirichlet);
+    // One singular flag per level serves all components, so a component that
+    // only the EB could fix must be fixed by it in all components or none
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!isEBRobin() || m_eb_robin_pins == m_eb_robin_pins_all ||
+                                     itlo != m_lobc[0].end() || ithi != m_hibc[0].end() ||
+                                     m_a_scalar != 0.0,
+        "MLEBABecLap::setEBRobin: with no Dirichlet domain boundary and no a term,"
+        " a = 0 on the whole EB is supported for all components or none");
     if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBPinning())
     {  // No Dirichlet
         for (int alev = 0; alev < m_num_amr_levels; ++alev)

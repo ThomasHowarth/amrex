@@ -1,11 +1,22 @@
 # Robin a*phi + b*dphi/dn = f on the EB (MLEBABecLap::setEBRobin), in 2D or
 # 3D, with f from the exact solution.  The fluid is inside an off-center
 # sphere and the domain walls are covered, so the EB is the only boundary.
-# Variants (command-line arguments):
-#   eb_robin_a = 0                   Neumann (singular, error up to a constant)
-#   eb_robin_b = 0 max_error = 8.e-5   Dirichlet (as with eb_robin = 0)
-#   eb_robin_vary_a = 1 eb_robin_a = 10 max_error = 5.e-5   a varying in space
-#   max_level = 1 composite_solve = 1   two levels
+# Variants (command-line arguments), with the max_error and max_eb_flux_error
+# they need where those differ from below:
+#   eb_robin_a = 0                     Neumann (singular, error up to a constant)
+#   eb_robin_b = 0                     Dirichlet (as with eb_robin = 0)
+#       max_error = 8.e-5 max_eb_flux_error = 5.e-3
+#   eb_robin_vary_a = 1 eb_robin_a = 10   a varying in space
+#       max_error = 5.e-5 max_eb_flux_error = 5.e-4
+#   eb_robin_b = 0 eb_robin_split_x = 0.42 eb_robin_a2 = 0 eb_robin_b2 = -1
+#       Dirichlet for x < 0.42 and Neumann (written with b < 0) beyond
+#       max_error = 8.e-5 max_eb_flux_error = 5.e-3
+#   max_level = 1 composite_solve = 1  two levels, the fine one over the whole domain
+#   max_level = 1 composite_solve = 1 fine_lo = "0.5 0.5" fine_hi = "0.875 0.875"
+#       (three values each in 3D) the EB crosses the coarse/fine boundary:
+#       max_error = -1 max_eb_flux_error = -1, because MLCellLinOp::reflux
+#       does not weight the coarse/fine correction in cut cells by the area and
+#       volume fractions, which makes the error there first order at best
 amrex.fpe_trap_invalid = 1
 
 reltol = 1.e-12
@@ -25,6 +36,8 @@ max_grid_size = 32
 # The weighted max error is about 3.4e-5 (2D) and 3.0e-5 (3D) at n_cell = 64,
 # and second order
 max_error = 4.e-5
+# The max error of the EB flux from getEBFluxes is about 5e-5
+max_eb_flux_error = 7.e-5
 
 eb2.geom_type = sphere
 eb2.sphere_center = 0.42 0.47 0.5

@@ -70,12 +70,19 @@ private:
     amrex::Real eb_robin_a = 1.0;
     amrex::Real eb_robin_b = 1.0;
     bool eb_robin_vary_a = false;
+    // For x >= eb_robin_split_x, a and b are eb_robin_a2 and eb_robin_b2
+    amrex::Real eb_robin_split_x = 2.0;
+    amrex::Real eb_robin_a2 = 1.0;
+    amrex::Real eb_robin_b2 = 1.0;
     // b at the face centroids (MLEBABecLap's Location::FaceCentroid and
     // HypreMLABecLap::setBCoeffsOnCentroids) instead of the face centers
     bool beta_on_centroid = false;
     // Abort if a level's volume-fraction-weighted max error exceeds this
     // (negative: not checked)
     amrex::Real max_error = -1.0;
+    // Abort if a level's max error of the EB flux from getEBFluxes exceeds this
+    // (negative: not checked); in a composite solve only the finest level
+    amrex::Real max_eb_flux_error = -1.0;
     amrex::Real acoef_value = 0.0;
     amrex::Real ghost_value = 0.0; // in phi's ghost cells off the domain boundary
     amrex::Vector<int> is_periodic{AMREX_D_DECL(0,0,0)};

@@ -196,7 +196,7 @@ public:
      * homogeneous Neumann (g = 0).
      *
      * Call this on every AMR level.  It cannot be combined with
-     * setEBDirichlet() or setEBHomogDirichlet().  If no other boundary
+     * setEBDirichlet(), setEBHomogDirichlet() or setEBRobin().  If no other boundary
      * condition fixes the solution, the problem is singular and the solver
      * removes the incompatible part of the right-hand side, which now
      * includes the EB flux, as with inhomogeneous Neumann conditions on the
@@ -428,8 +428,10 @@ protected:
     //! (AMR, MG) level.  The operator is EB Dirichlet with phi = 0 and the
     //! coefficient b_EB*a*dg/(a*dg+b) in m_eb_b_coeffs, computed from these.
     Vector<Vector<std::unique_ptr<MultiFab> > > m_eb_robin;
-    //! Robin on the EB with a != 0 somewhere, so that it fixes the solution.
+    //! Robin on the EB with a != 0 somewhere, for some (_pins) or all
+    //! (_pins_all) components, so that it fixes their solution.
     bool m_eb_robin_pins = false;
+    bool m_eb_robin_pins_all = false;
 
     Vector<int> m_is_singular;
 
@@ -463,6 +465,8 @@ public: // for cuda
                          const MultiFab* beta, Real const* beta_vals);
     //! The Robin EB Dirichlet coefficient on (\p amrlev, \p mglev).
     void computeEBRobinBeff (int amrlev, int mglev);
+    //! Average the Robin data from MG level \p mglev-1 to \p mglev of AMR level \p amrlev.
+    void averageDownEBRobin (int amrlev, int mglev);
 protected:
 
     //! Average coefficients down across all AMR and MG levels.

@@ -231,7 +231,7 @@ MyTest::solve ()
         }
     }
 
-    if (verbose > 0 || max_error >= 0.0) {
+    if (verbose > 0 || max_error >= 0.0 || max_eb_flux_error >= 0.0) {
         for (int ilev = 0; ilev <= max_level; ++ilev)
         {
             MultiFab mf(phi[ilev].boxArray(),phi[ilev].DistributionMap(), 1, 0);
@@ -261,8 +261,13 @@ MyTest::solve ()
             MultiFab::Copy(mf_feb_err, fluxeb_sol[ilev], 0, 0, 1, 0);
             MultiFab::Subtract(mf_feb_err, fluxeb_exact[ilev], 0, 0, 1, 0);
 
+            const Real feb_norminf = mf_feb_err.norm0();
             amrex::Print() << "Level " << ilev << ": EB flux error norms "
-                << mf_feb_err.norm0() << ", " << mf_feb_err.norm1()*nxyzi << '\n';
+                << feb_norminf << ", " << mf_feb_err.norm1()*nxyzi << '\n';
+            const bool check_level = !composite_solve || ilev == max_level;
+            if (max_eb_flux_error >= 0.0 && check_level && !(feb_norminf <= max_eb_flux_error)) {
+                amrex::Abort("The EB flux max error exceeds max_eb_flux_error");
+            }
 
             MultiFab::Multiply(mf_feb_err, barea, 0, 0, 1, 0);
 
@@ -640,7 +645,11 @@ MyTest::readParameters ()
     pp.query("eb_robin_a", eb_robin_a);
     pp.query("eb_robin_b", eb_robin_b);
     pp.query("eb_robin_vary_a", eb_robin_vary_a);
+    pp.query("eb_robin_split_x", eb_robin_split_x);
+    pp.query("eb_robin_a2", eb_robin_a2);
+    pp.query("eb_robin_b2", eb_robin_b2);
     pp.query("max_error", max_error);
+    pp.query("max_eb_flux_error", max_eb_flux_error);
     pp.query("acoef", acoef_value);
     pp.query("ghost_value", ghost_value);
     // Exactly AMREX_SPACEDIM values: a shorter list is an error
@@ -879,6 +888,9 @@ MyTest::initData ()
             const Real a0 = eb_robin_a;
             const Real b0 = eb_robin_b;
             const bool vary_a = eb_robin_vary_a;
+            const Real split_x = eb_robin_split_x;
+            const Real a2 = eb_robin_a2;
+            const Real b2 = eb_robin_b2;
             const Real problo_x = geom[ilev].ProbLo(0);
             for (MFIter mfi(robin_f[ilev]); mfi.isValid(); ++mfi) {
                 auto const& ra = robin_a[ilev].array(mfi);
@@ -892,9 +904,13 @@ MyTest::initData ()
                     Real const x = problo_x + (Real(i)+Real(0.5))*dx[0];
                     ra(i,j,k) = vary_a ? a0*(Real(1.0)+x) : a0;
                     rb(i,j,k) = b0;
+                    if (x >= split_x) {
+                        ra(i,j,k) = a2;
+                        rb(i,j,k) = b2;
+                    }
                     // phieb is set in the cut cells only
                     rf(i,j,k) = flag(i,j,k).isSingleValued()
-                        ? ra(i,j,k)*pe(i,j,k) + b0*g(i,j,k) : Real(0.0);
+                        ? ra(i,j,k)*pe(i,j,k) + rb(i,j,k)*g(i,j,k) : Real(0.0);
                 });
             }
         }

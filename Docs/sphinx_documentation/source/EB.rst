@@ -748,8 +748,8 @@ have been discussed in Chapter :ref:`Chap:LinearSolvers`.
 
 AMReX supports multi-level
 1) cell-centered solvers with homogeneous Neumann, inhomogeneous Neumann,
-homogeneous Dirichlet, or inhomogeneous Dirichlet boundary conditions on
-the EB faces, and
+homogeneous Dirichlet, inhomogeneous Dirichlet, or Robin boundary conditions
+on the EB faces, and
 2) nodal solvers with homogeneous Neumann boundary conditions,
 or inflow velocity conditions on the EB faces.
 
@@ -807,7 +807,7 @@ where dphidn_on_eb is the MultiFab holding the normal derivative
 with :math:`n` the unit normal pointing out of the fluid and into the body,
 and coeff is as above. The EB flux is then :math:`-\beta\,\partial\phi/\partial n`.
 Call it on every AMR level; it cannot be combined with
-:cpp:`setEBDirichlet` or :cpp:`setEBHomogDirichlet`.
+:cpp:`setEBDirichlet`, :cpp:`setEBHomogDirichlet` or :cpp:`setEBRobin`.
 The prescribed flux is added to the right-hand side before the solve, so if
 the problem is singular (no Dirichlet boundary and no :math:`a` term) the
 solver makes it solvable with the EB flux included, as it does for
