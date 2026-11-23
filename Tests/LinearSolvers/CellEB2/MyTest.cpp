@@ -881,10 +881,10 @@ MyTest::initData ()
         }
 
         // Robin data: f = a*phi + b*dphi/dn from the exact phi and dphi/dn on the EB
-        robin_a[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
-        robin_b[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
-        robin_f[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
-        {
+        if (eb_robin) {
+            robin_a[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
+            robin_b[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
+            robin_f[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
             const Real a0 = eb_robin_a;
             const Real b0 = eb_robin_b;
             const bool vary_a = eb_robin_vary_a;

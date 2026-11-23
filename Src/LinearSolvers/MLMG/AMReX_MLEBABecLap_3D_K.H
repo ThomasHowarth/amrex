@@ -542,47 +542,35 @@ Real mlebabeclap_eb_dg (int i, int j, int k,
 // Robin a*phi + b*dphi/dn = f on the EB.  With the EB Dirichlet stencil's
 // dphi/dn = (phi_b - phi_g)/dg, eliminating phi_b gives
 // dphi/dn = (f - a*phi_g)/(a*dg + b).  So b_EB*dphi/dn is homogeneous EB
-// Dirichlet with the coefficient b_EB*a*dg/(a*dg+b) (this function), plus the
-// known b_EB*f/(a*dg+b) (mlebabeclap_eb_robin_flux), which goes into the rhs
-// as for inhomogeneous Neumann.  robin holds b_EB, a and b, ncomp components each.
+// Dirichlet with the coefficient beff = b_EB*a*dg/(a*dg+b), plus the known
+// q = b_EB*f/(a*dg+b), which goes into the rhs as for inhomogeneous Neumann.
+// robin holds b_EB, a and b, ncomp components each.  q is written if it is
+// not null, from f.
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-void mlebabeclap_eb_robin_beff (int i, int j, int k, int n,
-                                Array4<Real> const& beff,
-                                Array4<Real const> const& robin, int ncomp,
-                                Array4<EBCellFlag const> const& flag,
-                                Array4<Real const> const& vfrc,
-                                Array4<Real const> const& apx,
-                                Array4<Real const> const& apy,
-                                Array4<Real const> const& apz,
-                                GpuArray<Real,AMREX_SPACEDIM> const& dxinv) noexcept
+void mlebabeclap_eb_robin (int i, int j, int k, int n,
+                           Array4<Real> const& beff,
+                           Array4<Real> const& q,
+                           Array4<Real const> const& f,
+                           Array4<Real const> const& robin, int ncomp,
+                           Array4<EBCellFlag const> const& flag,
+                           Array4<Real const> const& vfrc,
+                           Array4<Real const> const& apx,
+                           Array4<Real const> const& apy,
+                           Array4<Real const> const& apz,
+                           GpuArray<Real,AMREX_SPACEDIM> const& dxinv) noexcept
 {
-    beff(i,j,k,n) = Real(0.0);
+    Real be = Real(0.0);
+    Real qq = Real(0.0);
     if (flag(i,j,k).isSingleValued()) {
         Real adg = robin(i,j,k,n+ncomp) * mlebabeclap_eb_dg(i,j,k,vfrc,apx,apy,apz,dxinv);
         Real den = adg + robin(i,j,k,n+2*ncomp);
-        if (den != Real(0.0)) { beff(i,j,k,n) = robin(i,j,k,n) * (adg/den); }
+        if (den != Real(0.0)) {
+            be = robin(i,j,k,n) * (adg/den);
+            if (q) { qq = robin(i,j,k,n) * (f(i,j,k,n)/den); }
+        }
     }
-}
-
-//! The known part b_EB*f/(a*dg+b) of the Robin EB flux (see mlebabeclap_eb_robin_beff).
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-void mlebabeclap_eb_robin_flux (int i, int j, int k, int n,
-                                Array4<Real> const& q,
-                                Array4<Real const> const& robin, int ncomp,
-                                Array4<Real const> const& f,
-                                Array4<EBCellFlag const> const& flag,
-                                Array4<Real const> const& vfrc,
-                                Array4<Real const> const& apx,
-                                Array4<Real const> const& apy,
-                                Array4<Real const> const& apz,
-                                GpuArray<Real,AMREX_SPACEDIM> const& dxinv) noexcept
-{
-    q(i,j,k,n) = Real(0.0);
-    if (flag(i,j,k).isSingleValued()) {
-        Real adg = robin(i,j,k,n+ncomp) * mlebabeclap_eb_dg(i,j,k,vfrc,apx,apy,apz,dxinv);
-        Real den = adg + robin(i,j,k,n+2*ncomp);
-        if (den != Real(0.0)) { q(i,j,k,n) = robin(i,j,k,n) * (f(i,j,k,n)/den); }
-    }
+    beff(i,j,k,n) = be;
+    if (q) { q(i,j,k,n) = qq; }
 }
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE

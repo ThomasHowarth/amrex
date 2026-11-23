@@ -896,8 +896,6 @@ MLEBABecLap::setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, c
             m_eb_b_coeffs[amrlev][mg] = std::make_unique<MultiFab>(m_grids[amrlev][mg], m_dmap[amrlev][mg],
                                                                    ncomp, 0, MFInfo(),
                                                                    *m_factory[amrlev][mg]);
-            // Computed in computeEBRobinCoeffs, after averageDownCoeffs has read it
-            m_eb_b_coeffs[amrlev][mg]->setVal(0.0);
         }
         // The operator is the EB Dirichlet one with phi = 0 on the EB
         m_eb_phi[amrlev] = std::make_unique<MultiFab>(m_grids[amrlev][mglev], m_dmap[amrlev][mglev],
@@ -913,11 +911,13 @@ MLEBABecLap::setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, c
 
     MultiFab& robin = *m_eb_robin[amrlev][mglev];
     MultiFab& ebflux = *m_eb_neumann_flux[amrlev];
+    MultiFab& beff = *m_eb_b_coeffs[amrlev][mglev];
 
     const auto *factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[amrlev][mglev].get());
     if (factory == nullptr) {
         robin.setVal(0.0);
         ebflux.setVal(0.0);
+        beff.setVal(0.0);
         return;
     }
     const FabArray<EBCellFlagFab>& flags = factory->getMultiEBCellFlagFab();
@@ -938,12 +938,13 @@ MLEBABecLap::setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, c
         const Box& bx = mfi.tilebox();
         Array4<Real> const& rob = robin.array(mfi);
         Array4<Real> const& qfab = ebflux.array(mfi);
+        Array4<Real> const& befab = beff.array(mfi);
         // Only cut cells carry EB data
         if (flags[mfi].getType(bx) != FabType::singlevalued) {
             AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, ncomp, i, j, k, n,
             {
                 rob(i,j,k,n) = rob(i,j,k,n+ncomp) = rob(i,j,k,n+2*ncomp) = Real(0.0);
-                qfab(i,j,k,n) = Real(0.0);
+                qfab(i,j,k,n) = befab(i,j,k,n) = Real(0.0);
             });
             continue;
         }
@@ -967,8 +968,9 @@ MLEBABecLap::setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, c
             } else {
                 rob(i,j,k,n) = rob(i,j,k,n+ncomp) = rob(i,j,k,n+2*ncomp) = Real(0.0);
             }
-            mlebabeclap_eb_robin_flux(i,j,k,n, qfab, rob, ncomp, fin, flag, vfracfab,
-                                      AMREX_D_DECL(apxfab,apyfab,apzfab), dxinv);
+            // beff here too, so that getEBFluxes works before the next solve
+            mlebabeclap_eb_robin(i,j,k,n, befab, qfab, fin, rob, ncomp, flag, vfracfab,
+                                 AMREX_D_DECL(apxfab,apyfab,apzfab), dxinv);
         });
     }
 
@@ -996,9 +998,6 @@ MLEBABecLap::setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, c
     ParallelAllReduce::Max(bad, ParallelContext::CommunicatorSub());
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(bad == 0,
         "MLEBABecLap::setEBRobin: a and b must not have opposite signs or both be zero");
-
-    // So that getEBFluxes works before the next solve
-    computeEBRobinBeff(amrlev, mglev);
 }
 
 void
@@ -1007,48 +1006,55 @@ MLEBABecLap::computeEBRobinCoeffs ()
     if (!isEBRobin()) { return; }
     const int ncomp = getNComp();
     for (int amrlev = 0; amrlev < m_num_amr_levels; ++amrlev) {
+        // dg depends on the level, so the coefficient is computed on each level
+        // from the averaged b_EB, a and b rather than averaged itself.  setEBRobin
+        // has computed it on MG level 0.
         for (int mglev = 1; mglev < m_num_mg_levels[amrlev]; ++mglev) {
             averageDownEBRobin(amrlev, mglev);
-        }
-        // dg depends on the level, so the coefficient is computed on each level
-        // from the averaged b_EB, a and b rather than averaged itself
-        for (int mglev = 0; mglev < m_num_mg_levels[amrlev]; ++mglev) {
             computeEBRobinBeff(amrlev, mglev);
         }
     }
 
     // Whether the EB fixes each component's solution (a != 0 somewhere)
     m_eb_robin_pins = false;
-    m_eb_robin_pins_all = true;
+    bool pins_all = true;
     for (int n = 0; n < ncomp; ++n) {
         bool pins = false;
         for (int amrlev = 0; amrlev < m_num_amr_levels; ++amrlev) {
             pins = pins || m_eb_b_coeffs[amrlev][0]->norminf(n, 1, IntVect(0)) > Real(0.0);
         }
         m_eb_robin_pins = m_eb_robin_pins || pins;
-        m_eb_robin_pins_all = m_eb_robin_pins_all && pins;
+        pins_all = pins_all && pins;
     }
+    // One singular flag per level serves all components, so a component that
+    // only the EB could fix must be fixed by it in all components or none
+    const bool domain_dirichlet =
+        std::ranges::find(m_lobc[0], BCType::Dirichlet) != m_lobc[0].end() ||
+        std::ranges::find(m_hibc[0], BCType::Dirichlet) != m_hibc[0].end();
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_eb_robin_pins == pins_all || domain_dirichlet ||
+                                     m_a_scalar != 0.0,
+        "MLEBABecLap::setEBRobin: with no Dirichlet domain boundary and no a term,"
+        " a = 0 on the whole EB is supported for all components or none");
 }
 
 void
 MLEBABecLap::averageDownEBRobin (int amrlev, int mglev)
 {
     const int ncomp = getNComp();
-    MultiFab const& fine = *m_eb_robin[amrlev][mglev-1];
+    MultiFab& fine = *m_eb_robin[amrlev][mglev-1];
     IntVect ratio = (amrlev > 0) ? IntVect(mg_coarsen_ratio) : mg_coarsen_ratio_vec[mglev-1];
 
     // a and b may differ in sign and scale from cell to cell (e.g. Dirichlet next
     // to Neumann), so averaging them directly can give a coarse coefficient of
     // the wrong sign.  Scale each cell's pair so that a*L + b = 1, with L the
     // coarse cell size: both become >= 0, and the average then behaves like the
-    // average of a*dg/(a*dg+b) on the coarse level.
+    // average of a*dg/(a*dg+b) on the coarse level.  This is done in place: the
+    // fine level's coefficient beff and known flux do not change when a and b
+    // are scaled together, and have been computed.
     const auto cdxinv = m_geom[amrlev][mglev].InvCellSizeArray();
     const Real L = Real(1.0) / amrex::max(AMREX_D_DECL(cdxinv[0], cdxinv[1], cdxinv[2]));
-    MultiFab tmp(fine.boxArray(), fine.DistributionMap(), 3*ncomp, 0, MFInfo(),
-                 *m_factory[amrlev][mglev-1]);
-    MultiFab::Copy(tmp, fine, 0, 0, 3*ncomp, 0);
-    auto const& tma = tmp.arrays();
-    amrex::ParallelFor(tmp, IntVect(0), ncomp,
+    auto const& tma = fine.arrays();
+    amrex::ParallelFor(fine, IntVect(0), ncomp,
         [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
         {
             auto const& t = tma[box_no];
@@ -1058,7 +1064,7 @@ MLEBABecLap::averageDownEBRobin (int amrlev, int mglev)
                 t(i,j,k,n+2*ncomp) /= den;
             }
         });
-    amrex::EB_average_down_boundaries(tmp, *m_eb_robin[amrlev][mglev], ratio, 0);
+    amrex::EB_average_down_boundaries(fine, *m_eb_robin[amrlev][mglev], ratio, 0);
 }
 
 void
@@ -1101,8 +1107,8 @@ MLEBABecLap::computeEBRobinBeff (int amrlev, int mglev)
                      Array4<Real const> const& apzfab = area[2]->const_array(mfi););
         AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, ncomp, i, j, k, n,
         {
-            mlebabeclap_eb_robin_beff(i,j,k,n, befab, rob, ncomp, flag, vfracfab,
-                                      AMREX_D_DECL(apxfab,apyfab,apzfab), dxinv);
+            mlebabeclap_eb_robin(i,j,k,n, befab, Array4<Real>{}, Array4<Real const>{}, rob, ncomp,
+                                 flag, vfracfab, AMREX_D_DECL(apxfab,apyfab,apzfab), dxinv);
         });
     }
 }
@@ -1115,13 +1121,11 @@ MLEBABecLap::averageDownCoeffs ()
         auto& fine_a_coeffs = m_a_coeffs[amrlev];
         auto& fine_b_coeffs = m_b_coeffs[amrlev];
 
-        averageDownCoeffsSameAmrLevel(amrlev, fine_a_coeffs, fine_b_coeffs,
-                                      amrex::GetVecOfPtrs(m_eb_b_coeffs[amrlev]));
+        averageDownCoeffsSameAmrLevel(amrlev, fine_a_coeffs, fine_b_coeffs, ebBCoeffsToAverage(amrlev));
         averageDownCoeffsToCoarseAmrLevel(amrlev);
     }
 
-    averageDownCoeffsSameAmrLevel(0, m_a_coeffs[0], m_b_coeffs[0],
-                                  amrex::GetVecOfPtrs(m_eb_b_coeffs[0]));
+    averageDownCoeffsSameAmrLevel(0, m_a_coeffs[0], m_b_coeffs[0], ebBCoeffsToAverage(0));
 
     for (int amrlev = 0; amrlev < m_num_amr_levels; ++amrlev) {
         for (int mglev = 0; mglev < m_num_mg_levels[amrlev]; ++mglev) {
@@ -1132,10 +1136,18 @@ MLEBABecLap::averageDownCoeffs ()
     }
 }
 
+Vector<MultiFab*>
+MLEBABecLap::ebBCoeffsToAverage (int amrlev)
+{
+    // Robin computes the EB coefficient on every level (computeEBRobinCoeffs)
+    if (isEBRobin()) { return Vector<MultiFab*>(m_num_mg_levels[amrlev], nullptr); }
+    return amrex::GetVecOfPtrs(m_eb_b_coeffs[amrlev]);
+}
+
 void
 MLEBABecLap::averageDownEBPhi ()
 {
-    if (m_eb_phi[0]) {
+    if (m_eb_phi[0] && !isEBRobin()) { // Robin's phi on the EB is 0
         for (int amrlev = m_num_amr_levels-1; amrlev > 0; --amrlev) {
             amrex::EB_average_down_boundaries(*m_eb_phi[amrlev], *m_eb_phi[amrlev-1],
                                               AMRRefRatioVect(amrlev-1), 0);
@@ -1249,7 +1261,8 @@ MLEBABecLap::averageDownCoeffsToCoarseAmrLevel (int flev)
                                  amrex::GetArrOfPtrs(crse_b_coeffs),
                                  IntVect(mg_coarsen_ratio), m_geom[flev-1][0]);
 
-    if (fine_eb_b_coeffs) {
+    // Robin computes the EB coefficient on every level (computeEBRobinCoeffs)
+    if (fine_eb_b_coeffs && !isEBRobin()) {
         amrex::EB_average_down_boundaries(*fine_eb_b_coeffs, *crse_eb_b_coeffs, mg_coarsen_ratio, 0);
     }
 }
@@ -1279,13 +1292,6 @@ MLEBABecLap::prepareForSolve ()
     m_is_singular.resize(m_num_amr_levels, false);
     auto itlo = std::ranges::find(m_lobc[0], BCType::Dirichlet);
     auto ithi = std::ranges::find(m_hibc[0], BCType::Dirichlet);
-    // One singular flag per level serves all components, so a component that
-    // only the EB could fix must be fixed by it in all components or none
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!isEBRobin() || m_eb_robin_pins == m_eb_robin_pins_all ||
-                                     itlo != m_lobc[0].end() || ithi != m_hibc[0].end() ||
-                                     m_a_scalar != 0.0,
-        "MLEBABecLap::setEBRobin: with no Dirichlet domain boundary and no a term,"
-        " a = 0 on the whole EB is supported for all components or none");
     if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBPinning())
     {  // No Dirichlet
         for (int alev = 0; alev < m_num_amr_levels; ++alev)
@@ -1928,13 +1934,6 @@ MLEBABecLap::update ()
     m_is_singular.resize(m_num_amr_levels, false);
     auto itlo = std::ranges::find(m_lobc[0], BCType::Dirichlet);
     auto ithi = std::ranges::find(m_hibc[0], BCType::Dirichlet);
-    // One singular flag per level serves all components, so a component that
-    // only the EB could fix must be fixed by it in all components or none
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!isEBRobin() || m_eb_robin_pins == m_eb_robin_pins_all ||
-                                     itlo != m_lobc[0].end() || ithi != m_hibc[0].end() ||
-                                     m_a_scalar != 0.0,
-        "MLEBABecLap::setEBRobin: with no Dirichlet domain boundary and no a term,"
-        " a = 0 on the whole EB is supported for all components or none");
     if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBPinning())
     {  // No Dirichlet
         for (int alev = 0; alev < m_num_amr_levels; ++alev)

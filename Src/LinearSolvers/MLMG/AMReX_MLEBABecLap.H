@@ -428,10 +428,8 @@ protected:
     //! (AMR, MG) level.  The operator is EB Dirichlet with phi = 0 and the
     //! coefficient b_EB*a*dg/(a*dg+b) in m_eb_b_coeffs, computed from these.
     Vector<Vector<std::unique_ptr<MultiFab> > > m_eb_robin;
-    //! Robin on the EB with a != 0 somewhere, for some (_pins) or all
-    //! (_pins_all) components, so that it fixes their solution.
+    //! Robin on the EB with a != 0 somewhere, so that it fixes the solution.
     bool m_eb_robin_pins = false;
-    bool m_eb_robin_pins_all = false;
 
     Vector<int> m_is_singular;
 
@@ -471,6 +469,8 @@ protected:
 
     //! Average coefficients down across all AMR and MG levels.
     void averageDownCoeffs ();
+    //! The EB coefficients of AMR level \p amrlev that averageDownCoeffs averages.
+    Vector<MultiFab*> ebBCoeffsToAverage (int amrlev);
     //! Average inhomogeneous EB Dirichlet values down across AMR levels.
     void averageDownEBPhi ();
     //! Average coefficients from fine AMR level \p flev to coarse AMR level \p flev-1.
