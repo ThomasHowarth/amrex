@@ -814,6 +814,26 @@ solver makes it solvable with the EB flux included, as it does for
 :cpp:`LinOpBCType::inhomogNeumann` on the domain boundary.
 :cpp:`getEBFluxes` returns :math:`-\beta\,\partial\phi/\partial n` (without the scalar :math:`B`).
 
+To set Robin boundary conditions,
+:math:`a\phi + b\,\partial\phi/\partial n = f` on the EB, call
+
+.. highlight:: c++
+
+::
+
+    ml_ebabeclap->setEBRobin(lev, a_on_eb, b_on_eb, f_on_eb, coeff);
+
+where a_on_eb, b_on_eb and f_on_eb are MultiFabs holding :math:`a`, :math:`b`
+and :math:`f` at the EB surface centroid of every cut cell, :math:`n` is the
+same normal as for :cpp:`setEBNeumann`, and coeff is as above.
+:math:`a` and :math:`b` must not have opposite signs or both be zero.
+:math:`b = 0` gives the Dirichlet condition :math:`\phi = f/a`, and
+:math:`a = 0` the Neumann condition :math:`\partial\phi/\partial n = f/b`.
+Call it on every AMR level; it cannot be combined with the other EB boundary
+conditions or with :cpp:`setPhiOnCentroid`. The problem is singular only if
+:math:`a = 0` on the whole EB, and is then treated as with :cpp:`setEBNeumann`.
+:cpp:`getEBFluxes` returns :math:`-\beta\,\partial\phi/\partial n`.
+
 Currently there are options to define the face-based coefficients on
 face centers vs face centroids, and to interpret the solution variable
 as being defined on cell centers vs cell centroids.

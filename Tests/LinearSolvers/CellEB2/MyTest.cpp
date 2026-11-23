@@ -95,7 +95,11 @@ MyTest::solve ()
             mleb.setBCoeffs(ilev, amrex::GetArrOfConstPtrs(bcoef[ilev]), beta_loc);
         }
 
-        if (eb_neumann_inhomog) {
+        if (eb_robin) {
+            for (int ilev = 0; ilev <= max_level; ++ilev) {
+                mleb.setEBRobin(ilev, robin_a[ilev], robin_b[ilev], robin_f[ilev], bcoef_eb[ilev]);
+            }
+        } else if (eb_neumann_inhomog) {
             for (int ilev = 0; ilev <= max_level; ++ilev) {
                 mleb.setEBNeumann(ilev, dphidn_eb[ilev], bcoef_eb[ilev]);
             }
@@ -131,8 +135,8 @@ MyTest::solve ()
         mlmg.solve(amrex::GetVecOfPtrs(phi), amrex::GetVecOfConstPtrs(rhs), tol_rel, tol_abs);
         singular = mleb.isSingular(0);
 
-        if (eb_neumann_inhomog && !singular) {
-            // compResidual must include the EB Neumann term, as the solve does
+        if ((eb_neumann_inhomog || eb_robin) && !singular) {
+            // compResidual must include the known EB flux, as the solve does
             // (a singular problem's rhs would also need the solvability offset)
             Vector<MultiFab> res(max_level+1);
             for (int ilev = 0; ilev <= max_level; ++ilev) {
@@ -183,7 +187,9 @@ MyTest::solve ()
             mleb.setACoeffs(0, acoef[ilev]);
             mleb.setBCoeffs(0, amrex::GetArrOfConstPtrs(bcoef[ilev]), beta_loc);
 
-            if (eb_neumann_inhomog) {
+            if (eb_robin) {
+                mleb.setEBRobin(0, robin_a[ilev], robin_b[ilev], robin_f[ilev], bcoef_eb[ilev]);
+            } else if (eb_neumann_inhomog) {
                 mleb.setEBNeumann(0, dphidn_eb[ilev], bcoef_eb[ilev]);
             } else if (!eb_neumann) {
                 mleb.setEBDirichlet(0, phieb[ilev], bcoef_eb[ilev]);
@@ -212,7 +218,7 @@ MyTest::solve ()
         }
     }
 
-    if (singular && eb_neumann_inhomog) {
+    if (singular && (eb_neumann_inhomog || eb_robin)) {
         // The solution is unique up to a constant: remove the mean error of level 0
         MultiFab diff(grids[0], dmap[0], 1, 0, MFInfo(), *factory[0]);
         MultiFab::LinComb(diff, 1.0, phi[0], 0, -1.0, phiexact[0], 0, 0, 1, 0);
@@ -630,6 +636,10 @@ MyTest::readParameters ()
     pp.query("composite_solve", composite_solve);
     pp.query("eb_neumann", eb_neumann);
     pp.query("eb_neumann_inhomog", eb_neumann_inhomog);
+    pp.query("eb_robin", eb_robin);
+    pp.query("eb_robin_a", eb_robin_a);
+    pp.query("eb_robin_b", eb_robin_b);
+    pp.query("eb_robin_vary_a", eb_robin_vary_a);
     pp.query("max_error", max_error);
     pp.query("acoef", acoef_value);
     pp.query("ghost_value", ghost_value);
@@ -661,6 +671,10 @@ MyTest::readParameters ()
                                      "eb_neumann and eb_neumann_inhomog are exclusive");
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!use_mlhypre || !eb_neumann_inhomog,
                                      "HypreMLABecLap does not support eb_neumann_inhomog");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!eb_robin || (!eb_neumann && !eb_neumann_inhomog),
+                                     "eb_robin, eb_neumann and eb_neumann_inhomog are exclusive");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!use_mlhypre || !eb_robin,
+                                     "HypreMLABecLap does not support eb_robin");
     pp.query("mlhypre_num_setups", mlhypre_num_setups);
     pp.query("mlhypre_max_diff", mlhypre_max_diff);
     pp.query("mlhypre_max_fine_res", mlhypre_max_fine_res);
@@ -743,6 +757,9 @@ MyTest::initData ()
     bcoef.resize(nlevels);
     bcoef_eb.resize(nlevels);
     dphidn_eb.resize(nlevels);
+    robin_a.resize(nlevels);
+    robin_b.resize(nlevels);
+    robin_f.resize(nlevels);
     fluxeb_sol.resize(nlevels);
     fluxeb_exact.resize(nlevels);
 
@@ -852,6 +869,34 @@ MyTest::initData ()
             {
                 g(i,j,k) = (beb(i,j,k) != 0.0) ? -feb(i,j,k)/beb(i,j,k) : 0.0;
             });
+        }
+
+        // Robin data: f = a*phi + b*dphi/dn from the exact phi and dphi/dn on the EB
+        robin_a[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
+        robin_b[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
+        robin_f[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
+        {
+            const Real a0 = eb_robin_a;
+            const Real b0 = eb_robin_b;
+            const bool vary_a = eb_robin_vary_a;
+            const Real problo_x = geom[ilev].ProbLo(0);
+            for (MFIter mfi(robin_f[ilev]); mfi.isValid(); ++mfi) {
+                auto const& ra = robin_a[ilev].array(mfi);
+                auto const& rb = robin_b[ilev].array(mfi);
+                auto const& rf = robin_f[ilev].array(mfi);
+                auto const& pe = phieb[ilev].const_array(mfi);
+                auto const& g = dphidn_eb[ilev].const_array(mfi);
+                auto const& flag = factory[ilev]->getMultiEBCellFlagFab().const_array(mfi);
+                amrex::ParallelFor(mfi.validbox(), [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+                {
+                    Real const x = problo_x + (Real(i)+Real(0.5))*dx[0];
+                    ra(i,j,k) = vary_a ? a0*(Real(1.0)+x) : a0;
+                    rb(i,j,k) = b0;
+                    // phieb is set in the cut cells only
+                    rf(i,j,k) = flag(i,j,k).isSingleValued()
+                        ? ra(i,j,k)*pe(i,j,k) + b0*g(i,j,k) : Real(0.0);
+                });
+            }
         }
 
         // b = 1 on the finer levels: given to HypreMLABecLap as null (1) or

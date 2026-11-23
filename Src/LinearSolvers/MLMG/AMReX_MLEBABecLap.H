@@ -227,6 +227,60 @@ public:
      */
     void setEBNeumann (int amrlev, const MultiFab& dphidn, Vector<Real> const& beta);
 
+    /**
+     * \brief Specify Robin boundary conditions on EB faces.
+     *
+     * The EB carries the condition a*phi + b*dphi/dn = f, with the same
+     * normal as setEBNeumann(): it points out of the fluid region and into
+     * the embedded body.  a and b must not have opposite signs, and must not
+     * both be zero.  b = 0 is a Dirichlet condition phi = f/a, and a = 0 is
+     * an inhomogeneous Neumann condition dphi/dn = f/b.  The flux through
+     * the EB face is -beta*b_EB*dphi/dn, which is what getEBFluxes() returns
+     * (without the scalar beta).
+     *
+     * Call this on every AMR level.  It cannot be combined with
+     * setEBDirichlet(), setEBHomogDirichlet() or setEBNeumann(), or with
+     * setPhiOnCentroid().  The problem is singular only if a = 0 on the whole
+     * EB and no other boundary condition fixes the solution; the solver then
+     * treats it as with setEBNeumann().
+     *
+     * \param amrlev AMR level index.
+     * \param a      Coefficient a at the EB face centroids, with one or
+     *               getNComp() components.
+     * \param b      Coefficient b at the EB face centroids, with one or
+     *               getNComp() components.
+     * \param f      Right-hand side f at the EB face centroids, one
+     *               component per solution component.
+     * \param beta   Coefficient b_EB at the EB face centroids, with one or
+     *               getNComp() components.
+     *
+     * All MultiFabs must have the level's BoxArray and DistributionMapping.
+     */
+    void setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                     const MultiFab& beta);
+    /**
+     * \brief Specify Robin boundary conditions on EB faces.
+     *
+     * \param amrlev AMR level index.
+     * \param a      Coefficient a at the EB face centroids (see above).
+     * \param b      Coefficient b at the EB face centroids (see above).
+     * \param f      Right-hand side f at the EB face centroids (see above).
+     * \param beta   Single scalar coefficient applied to every EB face.
+     */
+    void setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                     Real beta);
+    /**
+     * \brief Specify Robin boundary conditions on EB faces.
+     *
+     * \param amrlev AMR level index.
+     * \param a      Coefficient a at the EB face centroids (see above).
+     * \param b      Coefficient b at the EB face centroids (see above).
+     * \param f      Right-hand side f at the EB face centroids (see above).
+     * \param beta   Per-component scalar coefficients.
+     */
+    void setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                     Vector<Real> const& beta);
+
     int getNComp () const override { return m_ncomp; }
 
     bool needsUpdate () const override {
@@ -367,8 +421,15 @@ protected:
 
     Vector<std::unique_ptr<MultiFab> > m_eb_phi;
     Vector<Vector<std::unique_ptr<MultiFab> > > m_eb_b_coeffs;
-    //! b_EB times the normal derivative on the EB, for inhomogeneous Neumann.
+    //! The known part of b_EB times the normal derivative on the EB, added to
+    //! the rhs: b_EB*g for inhomogeneous Neumann, b_EB*f/(a*dg+b) for Robin.
     Vector<std::unique_ptr<MultiFab> > m_eb_neumann_flux;
+    //! Robin on the EB: b_EB, a and b (getNComp() components each) on each
+    //! (AMR, MG) level.  The operator is EB Dirichlet with phi = 0 and the
+    //! coefficient b_EB*a*dg/(a*dg+b) in m_eb_b_coeffs, computed from these.
+    Vector<Vector<std::unique_ptr<MultiFab> > > m_eb_robin;
+    //! Robin on the EB with a != 0 somewhere, so that it fixes the solution.
+    bool m_eb_robin_pins = false;
 
     Vector<int> m_is_singular;
 
@@ -377,16 +438,31 @@ protected:
     //
     // functions
     //
+    //! The EB Dirichlet stencil is used (EB Dirichlet, or Robin).
     bool isEBDirichlet   () const noexcept { return m_eb_phi[0] != nullptr; }
+    //! A known EB flux goes into the rhs (EB inhomogeneous Neumann, or Robin).
     bool isEBInhomogNeumann () const noexcept { return m_eb_neumann_flux[0] != nullptr; }
+    bool isEBRobin () const noexcept { return m_eb_robin[0][0] != nullptr; }
+    //! The EB boundary condition fixes the solution (Dirichlet, or Robin with a != 0).
+    bool isEBPinning () const noexcept { return isEBDirichlet() && (!isEBRobin() || m_eb_robin_pins); }
 
     //! Abort if the EB boundary conditions are inconsistent (mixed, or missing on a level).
     void checkEBBC () const;
+    //! Abort if setEBRobin was called on AMR level \p amrlev; \p name is the caller.
+    void assertNotEBRobin (int amrlev, const char* name) const;
+    //! Robin on the EB: average b_EB, a and b down the MG levels and compute
+    //! the EB Dirichlet coefficient on every level.
+    void computeEBRobinCoeffs ();
 
 public: // for cuda
     //! Store b_EB * dphidn; \p beta, or \p beta_vals (one per component, device memory) if it is null.
     void setEBNeumannImpl (int amrlev, const MultiFab& dphidn, const MultiFab* beta,
                            Real const* beta_vals);
+    //! Store the Robin data; \p beta, or \p beta_vals (one per component, device memory) if it is null.
+    void setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                         const MultiFab* beta, Real const* beta_vals);
+    //! The Robin EB Dirichlet coefficient on (\p amrlev, \p mglev).
+    void computeEBRobinBeff (int amrlev, int mglev);
 protected:
 
     //! Average coefficients down across all AMR and MG levels.

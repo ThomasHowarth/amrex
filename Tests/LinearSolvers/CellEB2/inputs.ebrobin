@@ -1,0 +1,32 @@
+# Robin a*phi + b*dphi/dn = f on the EB (MLEBABecLap::setEBRobin), in 2D or
+# 3D, with f from the exact solution.  The fluid is inside an off-center
+# sphere and the domain walls are covered, so the EB is the only boundary.
+# Variants (command-line arguments):
+#   eb_robin_a = 0                   Neumann (singular, error up to a constant)
+#   eb_robin_b = 0 max_error = 8.e-5   Dirichlet (as with eb_robin = 0)
+#   eb_robin_vary_a = 1 eb_robin_a = 10 max_error = 5.e-5   a varying in space
+#   max_level = 1 composite_solve = 1   two levels
+amrex.fpe_trap_invalid = 1
+
+reltol = 1.e-12
+verbose = 1
+bottom_verbose = 0
+
+prob_type = 2
+eb_robin = 1
+eb_robin_a = 1.0
+eb_robin_b = 1.0
+domain_bc = neumann
+
+max_level = 0
+n_cell = 64
+max_grid_size = 32
+
+# The weighted max error is about 3.4e-5 (2D) and 3.0e-5 (3D) at n_cell = 64,
+# and second order
+max_error = 4.e-5
+
+eb2.geom_type = sphere
+eb2.sphere_center = 0.42 0.47 0.5
+eb2.sphere_radius = 0.33
+eb2.sphere_has_fluid_inside = 1

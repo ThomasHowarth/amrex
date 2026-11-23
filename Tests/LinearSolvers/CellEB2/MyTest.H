@@ -64,6 +64,12 @@ private:
     // derivative instead of Dirichlet; a singular problem's error is
     // measured up to a constant
     bool eb_neumann_inhomog = false;
+    // Robin a*phi + b*dphi/dn = f on the EB (setEBRobin), with f from the
+    // exact solution; eb_robin_vary_a makes a vary in space (a*(1+x))
+    bool eb_robin = false;
+    amrex::Real eb_robin_a = 1.0;
+    amrex::Real eb_robin_b = 1.0;
+    bool eb_robin_vary_a = false;
     // b at the face centroids (MLEBABecLap's Location::FaceCentroid and
     // HypreMLABecLap::setBCoeffsOnCentroids) instead of the face centers
     bool beta_on_centroid = false;
@@ -125,6 +131,7 @@ private:
     amrex::Vector<amrex::Array<amrex::MultiFab,AMREX_SPACEDIM> > bcoef;
     amrex::Vector<amrex::MultiFab> bcoef_eb;
     amrex::Vector<amrex::MultiFab> dphidn_eb; // exact normal derivative on the EB
+    amrex::Vector<amrex::MultiFab> robin_a, robin_b, robin_f; // Robin data on the EB
     amrex::Vector<amrex::MultiFab> fluxeb_sol;
     amrex::Vector<amrex::MultiFab> fluxeb_exact;
 };

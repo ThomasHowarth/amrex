@@ -225,10 +225,16 @@ public:
                      Location a_beta_loc) = delete;
     void setEBDirichlet (int amrlev, const MultiFab& phi, const MultiFab& beta) = delete;
     void setEBHomogDirichlet (int amrlev, const MultiFab& beta) = delete;
-    // The tensor terms at the EB are not implemented for Neumann data
+    // The tensor terms at the EB are not implemented for Neumann or Robin data
     void setEBNeumann (int amrlev, const MultiFab& dphidn, const MultiFab& beta) = delete;
     void setEBNeumann (int amrlev, const MultiFab& dphidn, Real beta) = delete;
     void setEBNeumann (int amrlev, const MultiFab& dphidn, Vector<Real> const& beta) = delete;
+    void setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                     const MultiFab& beta) = delete;
+    void setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                     Real beta) = delete;
+    void setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                     Vector<Real> const& beta) = delete;
 
 protected:
 

@@ -103,6 +103,7 @@ MLEBABecLap::define_ab_coeffs ()
     m_eb_phi.resize(m_num_amr_levels);
     m_eb_b_coeffs.resize(m_num_amr_levels);
     m_eb_neumann_flux.resize(m_num_amr_levels);
+    m_eb_robin.resize(m_num_amr_levels);
     m_eb_bc_tags.resize(m_num_amr_levels);
     for (int amrlev = 0; amrlev < m_num_amr_levels; ++amrlev)
     {
@@ -110,6 +111,7 @@ MLEBABecLap::define_ab_coeffs ()
         m_b_coeffs[amrlev].resize(m_num_mg_levels[amrlev]);
         m_cc_mask[amrlev].resize(m_num_mg_levels[amrlev]);
         m_eb_b_coeffs[amrlev].resize(m_num_mg_levels[amrlev]);
+        m_eb_robin[amrlev].resize(m_num_mg_levels[amrlev]);
         m_eb_bc_tags[amrlev].resize(m_num_mg_levels[amrlev]);
         for (int mglev = 0; mglev < m_num_mg_levels[amrlev]; ++mglev)
         {
@@ -244,6 +246,7 @@ MLEBABecLap::setBCoeffs (int amrlev, Vector<Real> const& beta)
 void
 MLEBABecLap::setEBDirichlet (int amrlev, const MultiFab& phi, const MultiFab& beta)
 {
+    assertNotEBRobin(amrlev, "setEBDirichlet");
     const int ncomp = getNComp();
     const int beta_ncomp = beta.nComp();
     bool phi_on_centroid = (m_phi_loc == Location::CellCentroid);
@@ -325,6 +328,7 @@ MLEBABecLap::setEBDirichlet (int amrlev, const MultiFab& phi, const MultiFab& be
 void
 MLEBABecLap::setEBDirichlet (int amrlev, const MultiFab& phi, Real beta)
 {
+    assertNotEBRobin(amrlev, "setEBDirichlet");
     const int ncomp = getNComp();
     bool phi_on_centroid = (m_phi_loc == Location::CellCentroid);
     if (m_eb_phi[amrlev] == nullptr) {
@@ -389,6 +393,7 @@ MLEBABecLap::setEBDirichlet (int amrlev, const MultiFab& phi, Real beta)
 void
 MLEBABecLap::setEBDirichlet (int amrlev, const MultiFab& phi, Vector<Real> const& hv_beta)
 {
+    assertNotEBRobin(amrlev, "setEBDirichlet");
     const int ncomp = getNComp();
     bool phi_on_centroid = (m_phi_loc == Location::CellCentroid);
     if (m_eb_phi[amrlev] == nullptr) {
@@ -457,6 +462,7 @@ MLEBABecLap::setEBDirichlet (int amrlev, const MultiFab& phi, Vector<Real> const
 void
 MLEBABecLap::setEBHomogDirichlet (int amrlev, const MultiFab& beta)
 {
+    assertNotEBRobin(amrlev, "setEBHomogDirichlet");
     const int ncomp = getNComp();
     const int beta_ncomp = beta.nComp();
     bool phi_on_centroid = (m_phi_loc == Location::CellCentroid);
@@ -535,6 +541,7 @@ MLEBABecLap::setEBHomogDirichlet (int amrlev, const MultiFab& beta)
 void
 MLEBABecLap::setEBHomogDirichlet (int amrlev, Real beta)
 {
+    assertNotEBRobin(amrlev, "setEBHomogDirichlet");
     const int ncomp = getNComp();
     bool phi_on_centroid = (m_phi_loc == Location::CellCentroid);
     if (m_eb_phi[amrlev] == nullptr) {
@@ -599,6 +606,7 @@ MLEBABecLap::setEBHomogDirichlet (int amrlev, Real beta)
 void
 MLEBABecLap::setEBHomogDirichlet (int amrlev, Vector<Real> const& hv_beta)
 {
+    assertNotEBRobin(amrlev, "setEBHomogDirichlet");
     const int ncomp = getNComp();
     bool phi_on_centroid = (m_phi_loc == Location::CellCentroid);
     if (m_eb_phi[amrlev] == nullptr) {
@@ -667,7 +675,15 @@ MLEBABecLap::setEBHomogDirichlet (int amrlev, Vector<Real> const& hv_beta)
 void
 MLEBABecLap::checkEBBC () const
 {
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!(isEBDirichlet() && isEBInhomogNeumann()),
+    // Robin uses both the EB Dirichlet stencil and a known EB flux
+    for (int amrlev = 1; amrlev < m_num_amr_levels; ++amrlev) {
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            (m_eb_robin[amrlev][0] != nullptr) == isEBRobin(),
+            "MLEBABecLap: setEBRobin must be called on every AMR level, and not mixed with other EB BCs");
+    }
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!isEBRobin() || m_phi_loc == Location::CellCenter,
+        "MLEBABecLap: setEBRobin does not support setPhiOnCentroid");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(isEBRobin() || !(isEBDirichlet() && isEBInhomogNeumann()),
         "MLEBABecLap: setEBNeumann cannot be combined with setEBDirichlet or setEBHomogDirichlet");
     for (int amrlev = 1; amrlev < m_num_amr_levels; ++amrlev) {
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
@@ -705,6 +721,7 @@ void
 MLEBABecLap::setEBNeumannImpl (int amrlev, const MultiFab& dphidn, const MultiFab* beta,
                                Real const* beta_vals)
 {
+    assertNotEBRobin(amrlev, "setEBNeumann");
     const int ncomp = getNComp();
     const int mglev = 0;
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(dphidn.nComp() >= ncomp,
@@ -812,6 +829,235 @@ MLEBABecLap::applyInhomogNeumannTerm (int amrlev, MultiFab& rhs) const
             mlebabeclap_eb_neumann_rhs(i,j,k,n, rhsfab, fluxfab, flagfab, vfracfab,
                                        AMREX_D_DECL(apxfab,apyfab,apzfab),
                                        bafab, dxinv, bscalar);
+        });
+    }
+}
+
+void
+MLEBABecLap::assertNotEBRobin (int amrlev, const char* name) const
+{
+    if (m_eb_robin[amrlev][0] != nullptr) {
+        amrex::Abort(std::string("MLEBABecLap::") + name + " cannot be combined with setEBRobin");
+    }
+}
+
+void
+MLEBABecLap::setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                         const MultiFab& beta)
+{
+    AMREX_ALWAYS_ASSERT(beta.nComp() == 1 || beta.nComp() == getNComp());
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(beta.boxArray() == m_grids[amrlev][0] &&
+                                     beta.DistributionMap() == m_dmap[amrlev][0],
+        "MLEBABecLap::setEBRobin: beta must have the level's BoxArray and DistributionMapping");
+    setEBRobinImpl(amrlev, a, b, f, &beta, nullptr);
+}
+
+void
+MLEBABecLap::setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                         Real beta)
+{
+    setEBRobin(amrlev, a, b, f, Vector<Real>(getNComp(), beta));
+}
+
+void
+MLEBABecLap::setEBRobin (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                         Vector<Real> const& hv_beta)
+{
+    AMREX_ALWAYS_ASSERT(static_cast<int>(hv_beta.size()) >= getNComp());
+    // AsyncArray is freed in stream order, so the host does not wait for the kernel
+    Gpu::AsyncArray<Real> beta_vals(hv_beta.data(), hv_beta.size());
+    setEBRobinImpl(amrlev, a, b, f, nullptr, beta_vals.data());
+}
+
+void
+MLEBABecLap::setEBRobinImpl (int amrlev, const MultiFab& a, const MultiFab& b, const MultiFab& f,
+                             const MultiFab* beta, Real const* beta_vals)
+{
+    const int ncomp = getNComp();
+    const int mglev = 0;
+    for (auto const* mf : {&a, &b, &f}) {
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(mf->boxArray() == m_grids[amrlev][mglev] &&
+                                         mf->DistributionMap() == m_dmap[amrlev][mglev],
+            "MLEBABecLap::setEBRobin: a, b and f must have the level's BoxArray and DistributionMapping");
+    }
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE((a.nComp() == 1 || a.nComp() == ncomp) &&
+                                     (b.nComp() == 1 || b.nComp() == ncomp) &&
+                                     f.nComp() >= ncomp,
+        "MLEBABecLap::setEBRobin: a and b need one or getNComp() components, f at least getNComp()");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(m_eb_robin[amrlev][0] != nullptr ||
+                                     (m_eb_phi[amrlev] == nullptr && m_eb_neumann_flux[amrlev] == nullptr),
+        "MLEBABecLap::setEBRobin cannot be combined with setEBDirichlet, setEBHomogDirichlet or setEBNeumann");
+
+    if (m_eb_robin[amrlev][0] == nullptr) {
+        for (int mg = 0; mg < m_num_mg_levels[amrlev]; ++mg) {
+            m_eb_robin[amrlev][mg] = std::make_unique<MultiFab>(m_grids[amrlev][mg], m_dmap[amrlev][mg],
+                                                                3*ncomp, 0, MFInfo(),
+                                                                *m_factory[amrlev][mg]);
+            m_eb_b_coeffs[amrlev][mg] = std::make_unique<MultiFab>(m_grids[amrlev][mg], m_dmap[amrlev][mg],
+                                                                   ncomp, 0, MFInfo(),
+                                                                   *m_factory[amrlev][mg]);
+            // Computed in computeEBRobinCoeffs, after averageDownCoeffs has read it
+            m_eb_b_coeffs[amrlev][mg]->setVal(0.0);
+        }
+        // The operator is the EB Dirichlet one with phi = 0 on the EB
+        m_eb_phi[amrlev] = std::make_unique<MultiFab>(m_grids[amrlev][mglev], m_dmap[amrlev][mglev],
+                                                      ncomp, 0, MFInfo(), *m_factory[amrlev][mglev]);
+        m_eb_phi[amrlev]->setVal(0.0);
+        m_eb_neumann_flux[amrlev] = std::make_unique<MultiFab>(m_grids[amrlev][mglev],
+                                                               m_dmap[amrlev][mglev],
+                                                               ncomp, 0, MFInfo(),
+                                                               *m_factory[amrlev][mglev]);
+    }
+    // a and b change the operator
+    m_needs_update = true;
+
+    MultiFab& robin = *m_eb_robin[amrlev][mglev];
+    MultiFab& ebflux = *m_eb_neumann_flux[amrlev];
+
+    const auto *factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[amrlev][mglev].get());
+    if (factory == nullptr) {
+        robin.setVal(0.0);
+        ebflux.setVal(0.0);
+        return;
+    }
+    const FabArray<EBCellFlagFab>& flags = factory->getMultiEBCellFlagFab();
+    const MultiFab& vfrac = factory->getVolFrac();
+    auto area = factory->getAreaFrac();
+    const auto dxinv = m_geom[amrlev][mglev].InvCellSizeArray();
+    const bool a_all_comps = a.nComp() == ncomp;
+    const bool b_all_comps = b.nComp() == ncomp;
+    const bool beta_all_comps = beta && beta->nComp() == ncomp;
+
+    MFItInfo mfi_info;
+    if (Gpu::notInLaunchRegion()) { mfi_info.EnableTiling().SetDynamic(true); }
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+    for (MFIter mfi(robin, mfi_info); mfi.isValid(); ++mfi)
+    {
+        const Box& bx = mfi.tilebox();
+        Array4<Real> const& rob = robin.array(mfi);
+        Array4<Real> const& qfab = ebflux.array(mfi);
+        // Only cut cells carry EB data
+        if (flags[mfi].getType(bx) != FabType::singlevalued) {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, ncomp, i, j, k, n,
+            {
+                rob(i,j,k,n) = rob(i,j,k,n+ncomp) = rob(i,j,k,n+2*ncomp) = Real(0.0);
+                qfab(i,j,k,n) = Real(0.0);
+            });
+            continue;
+        }
+
+        Array4<Real const> const& ain = a.const_array(mfi);
+        Array4<Real const> const& bin = b.const_array(mfi);
+        Array4<Real const> const& fin = f.const_array(mfi);
+        Array4<Real const> const& betain = beta ? beta->const_array(mfi)
+                                                : Array4<Real const>{};
+        Array4<EBCellFlag const> const& flag = flags.const_array(mfi);
+        Array4<Real const> const& vfracfab = vfrac.const_array(mfi);
+        AMREX_D_TERM(Array4<Real const> const& apxfab = area[0]->const_array(mfi);,
+                     Array4<Real const> const& apyfab = area[1]->const_array(mfi);,
+                     Array4<Real const> const& apzfab = area[2]->const_array(mfi););
+        AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, ncomp, i, j, k, n,
+        {
+            if (flag(i,j,k).isSingleValued()) {
+                rob(i,j,k,n) = betain ? betain(i,j,k,beta_all_comps ? n : 0) : beta_vals[n];
+                rob(i,j,k,n+ncomp) = ain(i,j,k,a_all_comps ? n : 0);
+                rob(i,j,k,n+2*ncomp) = bin(i,j,k,b_all_comps ? n : 0);
+            } else {
+                rob(i,j,k,n) = rob(i,j,k,n+ncomp) = rob(i,j,k,n+2*ncomp) = Real(0.0);
+            }
+            mlebabeclap_eb_robin_flux(i,j,k,n, qfab, rob, ncomp, fin, flag, vfracfab,
+                                      AMREX_D_DECL(apxfab,apyfab,apzfab), dxinv);
+        });
+    }
+
+    // a and b must not have opposite signs (the matrix would not be definite)
+    // and not both be zero (no condition)
+    auto const& rma = robin.const_arrays();
+    auto const& flagma = flags.const_arrays();
+    int bad = ParReduce(TypeList<ReduceOpMax>{}, TypeList<int>{}, robin, IntVect(0),
+        [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k) noexcept -> GpuTuple<int>
+        {
+            int r = 0;
+            if (flagma[box_no](i,j,k).isSingleValued()) {
+                for (int n = 0; n < ncomp; ++n) {
+                    Real ca = rma[box_no](i,j,k,n+ncomp);
+                    Real cb = rma[box_no](i,j,k,n+2*ncomp);
+                    if (ca*cb < Real(0.0) || (ca == Real(0.0) && cb == Real(0.0))) { r = 1; }
+                }
+            }
+            return {r};
+        });
+    ParallelDescriptor::ReduceIntMax(bad);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(bad == 0,
+        "MLEBABecLap::setEBRobin: a and b must not have opposite signs or both be zero");
+}
+
+void
+MLEBABecLap::computeEBRobinCoeffs ()
+{
+    if (!isEBRobin()) { return; }
+    const int ncomp = getNComp();
+    m_eb_robin_pins = false;
+    for (int amrlev = 0; amrlev < m_num_amr_levels; ++amrlev) {
+        for (int mglev = 1; mglev < m_num_mg_levels[amrlev]; ++mglev) {
+            IntVect ratio = (amrlev > 0) ? IntVect(mg_coarsen_ratio) : mg_coarsen_ratio_vec[mglev-1];
+            amrex::EB_average_down_boundaries(*m_eb_robin[amrlev][mglev-1],
+                                              *m_eb_robin[amrlev][mglev], ratio, 0);
+        }
+        // dg depends on the level, so the coefficient is computed on each level
+        // from the averaged b_EB, a and b rather than averaged itself
+        for (int mglev = 0; mglev < m_num_mg_levels[amrlev]; ++mglev) {
+            computeEBRobinBeff(amrlev, mglev);
+        }
+        m_eb_robin_pins = m_eb_robin_pins ||
+            m_eb_b_coeffs[amrlev][0]->norminf(0, ncomp, IntVect(0)) > Real(0.0);
+    }
+}
+
+void
+MLEBABecLap::computeEBRobinBeff (int amrlev, int mglev)
+{
+    const int ncomp = getNComp();
+    MultiFab& beff = *m_eb_b_coeffs[amrlev][mglev];
+    const auto *factory = dynamic_cast<EBFArrayBoxFactory const*>(m_factory[amrlev][mglev].get());
+    if (factory == nullptr) {
+        beff.setVal(0.0);
+        return;
+    }
+    const FabArray<EBCellFlagFab>& flags = factory->getMultiEBCellFlagFab();
+    const MultiFab& vfrac = factory->getVolFrac();
+    auto area = factory->getAreaFrac();
+    const auto dxinv = m_geom[amrlev][mglev].InvCellSizeArray();
+    const MultiFab& robin = *m_eb_robin[amrlev][mglev];
+
+    MFItInfo mfi_info;
+    if (Gpu::notInLaunchRegion()) { mfi_info.EnableTiling().SetDynamic(true); }
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+    for (MFIter mfi(beff, mfi_info); mfi.isValid(); ++mfi)
+    {
+        const Box& bx = mfi.tilebox();
+        Array4<Real> const& befab = beff.array(mfi);
+        if (flags[mfi].getType(bx) != FabType::singlevalued) {
+            AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, ncomp, i, j, k, n,
+            {
+                befab(i,j,k,n) = Real(0.0);
+            });
+            continue;
+        }
+        Array4<Real const> const& rob = robin.const_array(mfi);
+        Array4<EBCellFlag const> const& flag = flags.const_array(mfi);
+        Array4<Real const> const& vfracfab = vfrac.const_array(mfi);
+        AMREX_D_TERM(Array4<Real const> const& apxfab = area[0]->const_array(mfi);,
+                     Array4<Real const> const& apyfab = area[1]->const_array(mfi);,
+                     Array4<Real const> const& apzfab = area[2]->const_array(mfi););
+        AMREX_HOST_DEVICE_PARALLEL_FOR_4D ( bx, ncomp, i, j, k, n,
+        {
+            mlebabeclap_eb_robin_beff(i,j,k,n, befab, rob, ncomp, flag, vfracfab,
+                                      AMREX_D_DECL(apxfab,apyfab,apzfab), dxinv);
         });
     }
 }
@@ -982,12 +1228,13 @@ MLEBABecLap::prepareForSolve ()
 
     averageDownCoeffs();
     averageDownEBPhi();
+    computeEBRobinCoeffs();
 
     m_is_singular.clear();
     m_is_singular.resize(m_num_amr_levels, false);
     auto itlo = std::ranges::find(m_lobc[0], BCType::Dirichlet);
     auto ithi = std::ranges::find(m_hibc[0], BCType::Dirichlet);
-    if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBDirichlet())
+    if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBPinning())
     {  // No Dirichlet
         for (int alev = 0; alev < m_num_amr_levels; ++alev)
         {
@@ -1623,12 +1870,13 @@ MLEBABecLap::update ()
 
     averageDownCoeffs();
     averageDownEBPhi();
+    computeEBRobinCoeffs();
 
     m_is_singular.clear();
     m_is_singular.resize(m_num_amr_levels, false);
     auto itlo = std::ranges::find(m_lobc[0], BCType::Dirichlet);
     auto ithi = std::ranges::find(m_hibc[0], BCType::Dirichlet);
-    if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBDirichlet())
+    if (itlo == m_lobc[0].end() && ithi == m_hibc[0].end() && !isEBPinning())
     {  // No Dirichlet
         for (int alev = 0; alev < m_num_amr_levels; ++alev)
         {
@@ -1662,8 +1910,9 @@ MLEBABecLap::getEBFluxes (const Vector<MultiFab*>& a_flux, const Vector<MultiFab
     const int namrlevs = NAMRLevels();
     const bool is_eb_dirichlet =  isEBDirichlet();
     const bool is_eb_inhomog_neumann = isEBInhomogNeumann();
+    const bool is_eb_robin = isEBRobin();
     for (int amrlev = 0; amrlev < namrlevs; ++amrlev) {
-        if (is_eb_inhomog_neumann) {
+        if (is_eb_inhomog_neumann && !is_eb_robin) {
             // The flux is -b_EB * dphi/dn, which is given
             a_flux[amrlev]->setVal(0.0);
             MultiFab::Saxpy(*a_flux[amrlev], Real(-1.0), *m_eb_neumann_flux[amrlev],
@@ -1726,6 +1975,11 @@ MLEBABecLap::getEBFluxes (const Vector<MultiFab*>& a_flux, const Vector<MultiFab
                                            is_eb_inhomog, dxinvarr);
                     });
                 }
+            }
+            if (is_eb_robin) {
+                // The EB Dirichlet stencil gave the part with phi; add the known part
+                MultiFab::Saxpy(*a_flux[amrlev], Real(-1.0), *m_eb_neumann_flux[amrlev],
+                                0, 0, ncomp, 0);
             }
         }
     }
