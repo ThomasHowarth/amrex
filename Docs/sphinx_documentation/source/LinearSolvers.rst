@@ -989,8 +989,14 @@ In EB builds, the constructor that takes per-level factories assembles
 only).  The rows are weighted by the volume fraction, the fluxes across
 coarse/fine faces are the area-weighted fine fluxes, and the coarse cells
 under a finer level hold the EB average of their fine cells.
-:cpp:`setEBDirichlet` and :cpp:`setEBHomogDirichlet` set the boundary
-condition on the EB (homogeneous Neumann without them), and
+:cpp:`setEBDirichlet`, :cpp:`setEBHomogDirichlet` and :cpp:`setEBNeumann`
+set the boundary condition on the EB (homogeneous Neumann without them), with
+the same meaning as for :cpp:`MLEBABecLap` but with the data of all levels in
+one call; the last call decides, and the data take effect at the next
+:cpp:`setup`.  The EB flux of :cpp:`setEBNeumann` is added to the right-hand
+side internally.  :cpp:`HypreMLABecLap` does not make a singular problem
+solvable, so for one the right-hand side passed to :cpp:`solve` plus the EB
+flux must be solvable.
 :cpp:`setBCoeffsOnCentroids(true)` takes the ``b`` coefficients at the face
 centroids, as :cpp:`MLEBABecLap::setBCoeffs` with ``Location::FaceCentroid``
 (by default they are at the face centers).  ``hypre_mlabeclap.eb_scaling``

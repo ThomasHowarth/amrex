@@ -1,0 +1,34 @@
+# HypreMLABecLap's composite EB solve (IJ mode) compared with MLMG's, 2D or
+# 3D, with inhomogeneous Neumann on the EB (setEBNeumann): the geometry of
+# inputs.ebneumann (fluid inside an off-center sphere, covered domain walls),
+# so that the EB is the only boundary and the problem is singular (the
+# solutions are compared up to a constant).  Two levels with the fine level
+# over the whole domain, so that the two composite operators are the same.
+# Variants (command-line arguments):
+#   max_level = 0                    one level
+#   hypre_mlabeclap.backend = algmg  AlgMG instead of hypre
+#   mlhypre_num_setups = 3           setups with reuse, scaled coefficients
+composite_solve = 1
+use_mlhypre = 1
+mlhypre_max_diff = 1.e-9
+linop_maxorder = 3 # HypreMLABecLap is hardwired to maxorder 3
+reltol = 1.e-11
+
+prob_type = 2
+eb_neumann_inhomog = 1
+domain_bc = neumann
+
+max_level = 1
+n_cell = 64
+max_grid_size = 32
+eb2.max_grid_size = 32
+
+eb2.geom_type = sphere
+eb2.sphere_center = 0.42 0.47 0.5
+eb2.sphere_radius = 0.33
+eb2.sphere_has_fluid_inside = 1
+
+hypre_mlabeclap.hypre_solver = FlexGMRES
+hypre_mlabeclap.hypre_preconditioner = BoomerAMG
+verbose = 1
+bottom_verbose = 0

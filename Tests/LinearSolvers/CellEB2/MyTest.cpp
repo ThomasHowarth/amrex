@@ -275,17 +275,25 @@ MyTest::compareWithMLHypre (MLEBABecLap& mleb, MLMG& mlmg, Vector<MultiFab> cons
     int const nlevels = max_level+1;
     bool const singular = mleb.isSingular(0);
 
-    // A singular problem gets MLMG's consistent rhs
+    // A singular problem gets MLMG's consistent rhs: the offset that makes
+    // the rhs plus the inhomogeneous Neumann terms (EB flux) solvable.  The
+    // terms themselves are not added, HypreMLABecLap adds them
     Vector<MultiFab> hrhs(nlevels);
     for (int ilev = 0; ilev < nlevels; ++ilev) {
         hrhs[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
         MultiFab::Copy(hrhs[ilev], rhs[ilev], 0, 0, 1, 0);
     }
     if (singular) {
-        for (int ilev = max_level; ilev > 0; --ilev) {
-            amrex::EB_average_down(hrhs[ilev], hrhs[ilev-1], 0, 1, ref_ratio);
+        Vector<MultiFab> trhs(nlevels);
+        for (int ilev = 0; ilev < nlevels; ++ilev) {
+            trhs[ilev].define(grids[ilev], dmap[ilev], 1, 0, MFInfo(), *factory[ilev]);
+            MultiFab::Copy(trhs[ilev], rhs[ilev], 0, 0, 1, 0);
+            mleb.applyInhomogNeumannTerm(ilev, trhs[ilev]);
         }
-        auto const offset = mleb.getSolvabilityOffset(0, 0, hrhs[0]);
+        for (int ilev = max_level; ilev > 0; --ilev) {
+            amrex::EB_average_down(trhs[ilev], trhs[ilev-1], 0, 1, ref_ratio);
+        }
+        auto const offset = mleb.getSolvabilityOffset(0, 0, trhs[0]);
         for (int ilev = 0; ilev < nlevels; ++ilev) {
             mleb.fixSolvabilityByOffset(ilev, 0, hrhs[ilev], offset);
         }
@@ -298,7 +306,9 @@ MyTest::compareWithMLHypre (MLEBABecLap& mleb, MLMG& mlmg, Vector<MultiFab> cons
     hmleb.setIsSingular(singular);
     hmleb.setReuseSolverSetup(mlhypre_num_setups > 1);
     hmleb.setBCoeffsOnCentroids(beta_on_centroid);
-    if (!eb_neumann) {
+    if (eb_neumann_inhomog) {
+        hmleb.setEBNeumann(amrex::GetVecOfConstPtrs(dphidn_eb), amrex::GetVecOfConstPtrs(bcoef_eb));
+    } else if (!eb_neumann) {
         hmleb.setEBDirichlet(amrex::GetVecOfConstPtrs(phieb), amrex::GetVecOfConstPtrs(bcoef_eb));
     }
     Vector<Array<MultiFab const*,AMREX_SPACEDIM>> b(nlevels);
@@ -659,8 +669,6 @@ MyTest::readParameters ()
                                      "use_mlhypre needs composite_solve");
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!(eb_neumann && eb_neumann_inhomog),
                                      "eb_neumann and eb_neumann_inhomog are exclusive");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(!use_mlhypre || !eb_neumann_inhomog,
-                                     "HypreMLABecLap does not support eb_neumann_inhomog");
     pp.query("mlhypre_num_setups", mlhypre_num_setups);
     pp.query("mlhypre_max_diff", mlhypre_max_diff);
     pp.query("mlhypre_max_fine_res", mlhypre_max_fine_res);

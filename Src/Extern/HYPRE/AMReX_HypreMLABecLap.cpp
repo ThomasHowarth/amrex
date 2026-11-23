@@ -1798,6 +1798,24 @@ void HypreMLABecLap::setEBHomogDirichlet (Vector<MultiFab const*> const& a_beta)
 {
     copyEBData(a_beta, m_eb_beta);
     m_eb_phi.clear();
+    m_eb_neumann.clear();
+}
+
+void HypreMLABecLap::setEBNeumann (Vector<MultiFab const*> const& a_dphidn,
+                                   Vector<MultiFab const*> const& a_beta)
+{
+    m_eb_beta.clear();
+    m_eb_phi.clear();
+    copyEBData(a_dphidn, m_eb_neumann);
+    for (int ilev = 0; ilev < m_nlevels; ++ilev) {
+        if (!m_eb_neumann[ilev].isDefined()) { continue; }
+        MultiFab const* beta = (ilev < a_beta.size()) ? a_beta[ilev] : nullptr;
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(beta && beta->boxArray() == m_grids[ilev] &&
+                                         beta->DistributionMap() == m_dmap[ilev],
+            "HypreMLABecLap::setEBNeumann: beta must be given with the grids of the constructor");
+        MultiFab::Multiply(m_eb_neumann[ilev], *beta, 0, 0, 1, 0);
+    }
+    Gpu::streamSynchronize(); // the caller may free the sources
 }
 
 void HypreMLABecLap::copyEBData (Vector<MultiFab const*> const& src, Vector<MultiFab>& dst) const
@@ -1808,7 +1826,7 @@ void HypreMLABecLap::copyEBData (Vector<MultiFab const*> const& src, Vector<Mult
         if (src[ilev]) {
             AMREX_ALWAYS_ASSERT_WITH_MESSAGE(src[ilev]->boxArray() == m_grids[ilev] &&
                                              src[ilev]->DistributionMap() == m_dmap[ilev],
-                "HypreMLABecLap::setEBDirichlet: the data must have the grids of the constructor");
+                "HypreMLABecLap: the EB data must have the grids of the constructor");
             dst[ilev].define(m_grids[ilev], m_dmap[ilev], 1, 0);
             MultiFab::Copy(dst[ilev], *src[ilev], 0, 0, 1, 0);
         }
@@ -1881,6 +1899,8 @@ void HypreMLABecLap::buildEBTriplets (int ilev, Real a_ascalar, Real a_bscalar,
         ? &m_eb_beta[ilev] : nullptr;
     MultiFab const* phieb = (ilev < m_eb_phi.size() && m_eb_phi[ilev].isDefined())
         ? &m_eb_phi[ilev] : nullptr;
+    MultiFab const* gneb = (ilev < m_eb_neumann.size() && m_eb_neumann[ilev].isDefined())
+        ? &m_eb_neumann[ilev] : nullptr;
 
     Box const& domain = m_geom[ilev].Domain();
 
@@ -1960,6 +1980,7 @@ void HypreMLABecLap::buildEBTriplets (int ilev, Real a_ascalar, Real a_bscalar,
         if (fabtyp == FabType::singlevalued) {
             e.barea = barea.const_array(mfi);
             e.bcent = bcent.const_array(mfi);
+            if (gneb) { e.gneb = gneb->const_array(mfi); }
         }
         for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
             if (a_bcoef[idim].isDefined()) { e.b[idim] = a_bcoef[idim].const_array(mfi); }

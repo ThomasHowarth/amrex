@@ -154,6 +154,10 @@ jobs:
             hypre_mlabeclap.backend=algmg mlhypre_num_setups=3
         # b at the face centroids (prob_type=2: a variable b)
         mpiexec -n 2 ./main3d.gnu.TEST.MPI.ex inputs.mlhypre.cyl n_cell=32 prob_type=2 beta_on_centroid=1
+        # inhomogeneous Neumann on the EB: singular, and at the cylinder with setup reuse
+        mpiexec -n 2 ./main3d.gnu.TEST.MPI.ex inputs.mlhypre.ebneumann n_cell=32
+        mpiexec -n 2 ./main3d.gnu.TEST.MPI.ex inputs.mlhypre.cyl n_cell=32 eb_neumann_inhomog=1 \
+            hypre_mlabeclap.backend=algmg mlhypre_num_setups=3 acoef=1
         # an L-shaped fine level with a coarse cut cell at its concave corner;
         # a = 0 given or no a at all: the same solution
         for i in 0 1; do
@@ -323,6 +327,13 @@ jobs:
         done
         # b at the face centroids (prob_type=2: a variable b)
         mpiexec -n 2 ./main2d.gnu.TEST.MPI.ex inputs.mlhypre.cyl prob_type=2 beta_on_centroid=1
+        # inhomogeneous Neumann on the EB: singular (one and two levels), and at the cylinder
+        mpiexec -n 2 ./main2d.gnu.TEST.MPI.ex inputs.mlhypre.ebneumann
+        mpiexec -n 2 ./main2d.gnu.TEST.MPI.ex inputs.mlhypre.ebneumann max_level=0
+        for b in hypre algmg; do
+            mpiexec -n 2 ./main2d.gnu.TEST.MPI.ex inputs.mlhypre.cyl hypre_mlabeclap.backend=$b \
+                eb_neumann_inhomog=1 mlhypre_num_setups=3
+        done
         # three levels; NaN in the cells the system does not use must not matter
         mpiexec -n 2 ./main2d.gnu.TEST.MPI.ex inputs.mlhypre.cyl max_level=2 fine_shrink=0.03125 \
             nan_in_covered=1 amrex.fpe_trap_invalid=0

@@ -123,6 +123,21 @@ public:
     //! EB operator: homogeneous Dirichlet boundary condition on the EB
     void setEBHomogDirichlet (Vector<MultiFab const*> const& a_beta);
     /**
+     * \brief EB operator: inhomogeneous Neumann boundary condition on the EB
+     * for the following setups, as MLEBABecLap::setEBNeumann (the data are
+     * copied).  Without any of these calls the EB is homogeneous Neumann.
+     * The last of setEBDirichlet, setEBHomogDirichlet and setEBNeumann
+     * decides the EB boundary condition.  For a singular problem, the
+     * right-hand side of solve() plus the EB flux must be solvable.
+     *
+     * \param a_dphidn Per-level normal derivative at the EB, with the normal
+     *                 pointing out of the fluid; missing or null entries mean zero.
+     * \param a_beta   Per-level b coefficient on the EB (cell-centered),
+     *                 required on the levels with \p a_dphidn.
+     */
+    void setEBNeumann (Vector<MultiFab const*> const& a_dphidn,
+                       Vector<MultiFab const*> const& a_beta);
+    /**
      * \brief EB operator: the b coefficients of the following setups are at
      * the face centroids, as with MLEBABecLap::setBCoeffs and
      * Location::FaceCentroid (the gradient at a cut face is interpolated
@@ -137,7 +152,8 @@ public:
      * (same grids), updating the matrix values in place and keeping the
      * solver/preconditioner setup, which then only approximates the new
      * operator (see resetSolverSetup()).  With EB, the boundary condition
-     * types and whether setEBDirichlet() was called must not change.
+     * types and whether the EB is Dirichlet must not change (the EB Neumann
+     * data, which only enter the right-hand side, may).
      */
     void setReuseSolverSetup (bool v)
     {
@@ -376,7 +392,8 @@ private:
     //! EB operator (IJ mode): the scaling of the unknowns (with one ghost
     //! cell), the coarser level's row ids and scaling on the coarsened grids
     //! of each level, the right-hand side terms of the boundary values from
-    //! the last setup, and the EB Dirichlet data for the next one
+    //! the last setup, and the EB Dirichlet or Neumann (b times dphi/dn)
+    //! data for the next one
     bool m_eb = false;
     bool m_eb_scaling = true;
     bool m_beta_on_centroid = false;
@@ -386,6 +403,7 @@ private:
     Vector<MultiFab> m_eb_bcrhs;
     Vector<MultiFab> m_eb_beta;
     Vector<MultiFab> m_eb_phi;
+    Vector<MultiFab> m_eb_neumann;
     //! With setup reuse, the triplets of later setups are summed directly
     //! into a matrix's value array (composite::EntryGather)
     using EntryGather = composite::EntryGather;

@@ -34,6 +34,7 @@ struct HypMLABecLapEB
     Array4<Long const> crse_id;  // row ids of the coarser level, on the coarsened box (null on level 0)
     Array4<int const> fine_mask; // covered by the finer level
     Array4<Real const> a, beb, phieb;
+    Array4<Real const> gneb;       // b on the EB times the EB Neumann data (null: homogeneous)
     GpuArray<Array4<Real const>,AMREX_SPACEDIM> b;
     Array4<EBCellFlag const> flag;
     Array4<Real const> vfrac, barea, bcent;
@@ -209,12 +210,15 @@ int hypmlabeclap_eb_crse_interp (HypMLABecLapEB const& e, IntVect const& g, Orie
  * value and phi interpolated at a point inside the cell along the EB normal,
  * passed to put(cell, value); the EB value's term goes to \p bcrhs.
  */
-template <typename P>
-AMREX_GPU_HOST_DEVICE
-void hypmlabeclap_eb_dirichlet (HypMLABecLapEB const& e, IntVect const& c, Real kappa,
-                                P const& put, Real& bcrhs)
+/**
+ * \brief The EB normal of cut cell c, not normalized, from the area
+ * fractions scaled by the cell aspect ratio (as MLEBABecLap's kernels);
+ * returns its length.
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+Real hypmlabeclap_eb_normal (HypMLABecLapEB const& e, IntVect const& c,
+                             GpuArray<Real,AMREX_SPACEDIM>& nrm)
 {
-    GpuArray<Real,AMREX_SPACEDIM> nrm;
     Real anorm = Real(0.0);
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
         IntVect const ed = IntVect::TheDimensionVector(d);
@@ -224,7 +228,16 @@ void hypmlabeclap_eb_dirichlet (HypMLABecLapEB const& e, IntVect const& c, Real 
         }
         anorm += nrm[d]*nrm[d];
     }
-    anorm = std::sqrt(anorm);
+    return std::sqrt(anorm);
+}
+
+template <typename P>
+AMREX_GPU_HOST_DEVICE
+void hypmlabeclap_eb_dirichlet (HypMLABecLapEB const& e, IntVect const& c, Real kappa,
+                                P const& put, Real& bcrhs)
+{
+    GpuArray<Real,AMREX_SPACEDIM> nrm;
+    Real const anorm = hypmlabeclap_eb_normal(e, c, nrm);
     Real mmax = Real(0.0);
     for (int d = 0; d < AMREX_SPACEDIM; ++d) {
         nrm[d] /= anorm;
@@ -256,6 +269,28 @@ void hypmlabeclap_eb_dirichlet (HypMLABecLapEB const& e, IntVect const& c, Real 
         put(q, v);
     }
     if (e.phieb) { bcrhs += fb*e.phieb(c); }
+}
+
+/**
+ * \brief The right-hand side term of the inhomogeneous Neumann condition on
+ * the EB of cut cell c: MLEBABecLap's (mlebabeclap_eb_neumann_rhs) times the
+ * volume fraction, as the rows.  No term without EB area or normal.
+ */
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+Real hypmlabeclap_eb_neumann (HypMLABecLapEB const& e, IntVect const& c)
+{
+    GpuArray<Real,AMREX_SPACEDIM> nrm;
+    Real const anorm = hypmlabeclap_eb_normal(e, c, nrm);
+    if (e.barea(c) == Real(0.0) || anorm == Real(0.0)) { return Real(0.0); }
+    for (int d = 0; d < AMREX_SPACEDIM; ++d) { nrm[d] /= anorm; }
+#if (AMREX_SPACEDIM == 2)
+    Real const area = get_eb_area(e.barea(c), nrm[0], nrm[1], e.dxinv[0]/e.dxinv[1]);
+    return e.sb*e.dxinv[1]*area*e.gneb(c);
+#else
+    Real const area = get_eb_area(e.barea(c), nrm[0], nrm[1], nrm[2],
+                                  e.dxinv[0]/e.dxinv[1], e.dxinv[0]/e.dxinv[2]);
+    return e.sb*e.dxinv[1]*(e.dxinv[2]/e.dxinv[0])*area*e.gneb(c);
+#endif
 }
 
 /**
@@ -466,6 +501,9 @@ bool hypmlabeclap_eb_row (HypMLABecLapEB const& e, IntVect const& c, F const& pu
     if (e.beb && e.flag(c).isSingleValued()) {
         hypmlabeclap_eb_dirichlet(e, c, kappa, [&] (IntVect const& q, Real v) { put_phi(own, q, v); },
                                   bcrhs);
+    }
+    if (e.gneb && e.flag(c).isSingleValued()) {
+        bcrhs += hypmlabeclap_eb_neumann(e, c);
     }
 
     // A fluid cell with all faces covered and no EB Dirichlet or a term (an
